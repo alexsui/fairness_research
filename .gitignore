@@ -1,0 +1,16 @@
+C2DSR_src/dataset/
+C2DSR_src/fairness_dataset/
+C2DSR_src/model/__pycache__/
+C2DSR_src/models/
+C2DSR_src/result/
+C2DSR_src/loss/
+C2DSR_src/saved_models/
+C2DSR_src/__pycache__/
+C2DSR_src/__MACOSX/
+C2DSR_src/.ipynb_checkpoints/
+C2DSR_src/utils/__pycache__/
+__MACOSX/
+*.txt
+*.pt
+*.json
+*.csv
