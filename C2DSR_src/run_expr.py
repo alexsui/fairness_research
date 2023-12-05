@@ -3,6 +3,8 @@ import time
 import torch
 from train_rec import main
 import os
+import glob
+import ipdb
 parser = argparse.ArgumentParser()
 # dataset part
 parser.add_argument(
@@ -151,31 +153,36 @@ parser.add_argument('--mixed_included',type=bool, default= False ,help="mixed in
 parser.add_argument('--main_task',type=str, default="X" ,help="[dual, X, Y]")
 
 parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
-parser.add_argument('--test_data_type',type=str,default= "mixed" ,help="evaluation epoch")
+parser.add_argument('--domain',type=str,default= "cross" ,help="target only or cross domain")
 args, unknown = parser.parse_known_args()
 
 modes = [
-   
-    # "pretrain_proto_CL_dropout","pretrain_proto_CL_crop","pretrain_proto_CL_dropout_joint"
-    # "no_ssl_no_graph_no_Y","no_ssl_no_graph_no_X"
-    # "no_ssl_no_graph_real_with_time2"
     # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
+    # "fairness_baseline_Y_triple_pull"
+    # "fairness_baseline_single_domain_X","fairness_baseline_single_domain_Y"
     "fairness_baseline_X","fairness_baseline_Y"
-    # "fairness_baseline_X_eval","fairness_baseline_Y_eval"
 ]
-# ssl_values = ["proto_CL"]
 # training_modes = ["evaluation","evaluation"]
+# evaluation_models = ["fairness_baseline_single_domain_X", "fairness_baseline_single_domain_Y"]
 training_modes = ["finetune","finetune"]
-evaluation_models = ["fairness_baseline_X","fairness_baseline_Y"]
-# test_data_types = ["female","male"]
+# evaluation_models = ["fairness_baseline_X","fairness_baseline_Y"]
+pretrain_models =["fairness_baseline_X_single_domain","fairness_baseline_Y_single_domain"]
+domain = ["cross","cross"]
 main_tasks = ["X","Y"]
-# main_tasks = ["Y","Y"]
-# time_encodes = [False]
-mixed_included = False
-# augment_types = ["dropout","dropout"]
-data_dir = ["action_romance","action_thriller"]
+# param_group = True
+# pretrain_models = [] # for cross domain finetuning
+# 14_48 X
+# 1_5 X
+# 1_10 Y
+# 14_33 X	
+# data_dir = ["1_10","5_19","10_19"]
+# data_dir = ["14_48","1_5","1_10","14_33"]
+
+folder_list = glob.glob("./fairness_dataset/CIKM/*")
+folder_list = [x.split("/")[-1] for x in folder_list]
+data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
+print(data_dir)
 warmup_epoch = 1000 # prevent from doing clustering 
-valid_epoch = 3
 print("Config of Experiment:")
 print(f"Modes: {modes}")
 print("training_mode:", training_modes)
@@ -185,17 +192,19 @@ for data_idx in range(len(data_dir)):
     data_name = data_dir[data_idx]
     for i, mode in enumerate(modes):
         for seed in range(1, num_seeds+1):
-            args.main_task = main_tasks[i]
-            args.mixed_included = mixed_included       
             args.training_mode = training_modes[i]
-            args.num_cluster = "2,3,4"
-            args.evaluation_model = evaluation_models[i]   
-            # args.test_data_type = test_data_types[i]         
+            
+            args.domain = domain[i]
+            args.main_task = main_tasks[i]       
+            args.pretrain_model = pretrain_models[i]
+            # args.evaluation_model = evaluation_models[i]
+            # args.param_group = param_group
             args.data_dir = data_name
             args.id = mode
             args.seed = seed
-            args.valid_epoch = valid_epoch
+            
             args.warmup_epoch = warmup_epoch
+            args.num_cluster = "2,3,4"
             main(args)
 
  # for finetune

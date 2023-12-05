@@ -63,7 +63,7 @@ def main(args):
     # valid_collator = CLDataCollator(opt, eval=2)
     train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None)
     valid_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 2, collate_fn  = None)
-    test_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 1,data_type =opt['test_data_type'],collate_fn  = None)
+    test_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 1,collate_fn  = None)
     print("Data loading done!")
 
     # opt["itemnum"] = opt["source_item_num"] + opt["target_item_num"] + 1
@@ -86,16 +86,16 @@ def main(args):
     # model
     if opt['training_mode']=="finetune" or opt['training_mode']=="joint_learn"or opt['training_mode']=="evaluation":
         trainer = CDSRTrainer(opt, adj, adj_single)
-        if opt['pretrain_model'] is not None:
-            pretrain_path ="pretrain_models/" + opt['data_dir']+ f"/{opt['pretrain_model']}/{str(opt['load_pretrain_epoch'])}/pretrain_model.pt" 
-            print("pretrain_path",pretrain_path)
-            if os.path.exists(pretrain_path):
-                print("\033[01;32m Loading pretrained model from {}... \033[0m\n".format(pretrain_path))
-                trainer.load(pretrain_path)
-                print("\033[01;32m Loading pretrained model done! \033[0m\n")
-            else:
-                print("Pretrained model does not exist! \n Model training from scratch...")
-        elif opt['evaluation_model'] is not None and opt['training_mode']=="evaluation":
+        # if opt['pretrain_model'] is not None:
+        #     pretrain_path ="pretrain_models/" + opt['data_dir']+ f"/{opt['pretrain_model']}/{str(opt['load_pretrain_epoch'])}/pretrain_model.pt" 
+        #     print("pretrain_path",pretrain_path)
+        #     if os.path.exists(pretrain_path):
+        #         print("\033[01;32m Loading pretrained model from {}... \033[0m\n".format(pretrain_path))
+        #         trainer.load(pretrain_path)
+        #         print("\033[01;32m Loading pretrained model done! \033[0m\n")
+        #     else:
+        #         print("Pretrained model does not exist! \n Model training from scratch...")
+        if opt['evaluation_model'] is not None and opt['training_mode']=="evaluation":
             if opt["main_task"]=="X":
                 evaluation_path ="models/" + opt['data_dir']+ f"/{opt['evaluation_model']}/{str(opt['seed'])}/X_model.pt" 
             elif opt["main_task"]=="Y":    
@@ -107,6 +107,18 @@ def main(args):
                 print("\033[01;32m Loading evaluation model done! \033[0m\n")
             else:
                 print("Pretrained model does not exist! \n Model training from scratch...")
+        # elif opt['domain'] =="cross" and opt['pretrain_model'] is not None:  #single domain pretrain and cross finetune
+        #     if opt["main_task"]=="X":
+        #         pretrain_path ="models/" + opt['data_dir']+ f"/{opt['pretrain_model']}/{opt['seed']}/X_model.pt" 
+        #     elif opt["main_task"]=="Y":    
+        #         pretrain_path ="models/" + opt['data_dir']+ f"/{opt['pretrain_model']}/{opt['seed']}/Y_model.pt"
+        #     print("pretrain_path",pretrain_path)
+        #     if os.path.exists(pretrain_path):
+        #         print("\033[01;32m Loading pretrained model from {}... \033[0m\n".format(pretrain_path))
+        #         trainer.load(pretrain_path)
+        #         print("\033[01;32m Loading pretrained model done! \033[0m\n")
+        #     else:
+        #         print("Pretrained model does not exist! \n Model training from scratch...")
         else:
             print("\033[01;32m Model training from scratch... \033[0m\n")
         if opt['training_mode']=="joint_learn":
@@ -203,7 +215,8 @@ if __name__ == '__main__':
     parser.add_argument('--main_task',type=str,default="X" ,help="[dual, X, Y]")
     
     parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
-    parser.add_argument('--test_data_type',type=str,default= "mixed" ,help="evaluation epoch")
+    parser.add_argument('--domain',type=str,default= "cross" ,help="target only or cross domain")
+    # parser.add_argument('--test_data_type',type=str,default= "mixed" ,help="evaluation epoch")
     args = parser.parse_args()
     
     main(args)

@@ -49,10 +49,20 @@ class Trainer(object):
         except BaseException:
             print("Cannot load model from {}".format(filename))
             exit()
-        self.model.load_state_dict(checkpoint['model'])
+        # self.model.load_state_dict(checkpoint['model'])
         # self.opt = checkpoint['config']
         # self.model.load_state_dict(checkpoint)
-
+        state_dict = checkpoint['model']
+        # print(state_dict['lin_X.weight'])
+        if self.opt['main_task'] == "X":
+            state_dict.pop('lin_X.weight', None)
+            state_dict.pop('lin_X.bias', None)
+        elif self.opt['main_task'] == "Y":
+            state_dict.pop('lin_y.weight', None)
+            state_dict.pop('lin_y.bias', None)
+        state_dict.pop('lin_PAD.weight', None)
+        state_dict.pop('lin_PAD.bias', None)
+        self.model.load_state_dict(state_dict, strict=False)
     def save(self, filename):
         params = {
             'model': self.model.state_dict(),
@@ -303,8 +313,10 @@ class Pretrainer(Trainer):
             
         if self.opt['training_mode'] == 'joint_pretrain':
             if self.opt['time_encode']:
+                
                 seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
             else:
+                
                 seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
             used = 10
             ground = ground[:,-used:]
@@ -554,12 +566,13 @@ class CDSRTrainer(Trainer):
             param_name = []
             for name, param in self.model.named_parameters():
                 param_name.append(name)
-            target_param_name = [s for s in param_name if "lin" in s]
+            target_param_name = [s for s in param_name if "encoder_X" in s]
+            print("target_param_name:",target_param_name)
             group1 =[p for n, p in self.model.named_parameters() if n not in target_param_name and p.requires_grad]
             group2 =[p for n, p in self.model.named_parameters() if n in target_param_name and p.requires_grad]
             self.optimizer = torch_utils.get_optimizer(opt['optim'],
-                                                    [{'params': group1, 'lr': opt['lr']*0.1},
-                                                        {'params': group2, 'lr': opt['lr']}],
+                                                    [{'params': group1, 'lr': opt['lr']},
+                                                        {'params': group2, 'lr': opt['lr']*0.01}],
                                                     opt['lr'])
         else:
             self.optimizer = torch_utils.get_optimizer(opt['optim'], self.model.parameters(), opt['lr'])
@@ -769,16 +782,18 @@ class CDSRTrainer(Trainer):
     def pull_xy_embedding(self,seq, x_seq, y_seq):
         feat = self.get_embedding_for_ssl(data = seq, encoder = self.model.encoder, item_embed = self.model.item_emb, CL_projector = self.model.CL_projector, 
                           encoder_causality_mask = False, add_graph_node=False)
-        feat_X = self.get_embedding_for_ssl(data = x_seq, encoder = self.model.encoder_X, item_embed = self.model.item_emb_X, CL_projector = self.model.CL_projector_X)
+        # feat_X = self.get_embedding_for_ssl(data = x_seq, encoder = self.model.encoder_X, item_embed = self.model.item_emb_X, CL_projector = self.model.CL_projector_X)
         feat_Y = self.get_embedding_for_ssl(data = y_seq, encoder = self.model.encoder_Y, item_embed = self.model.item_emb_Y, CL_projector = self.model.CL_projector_Y)
-        sim_X_Y = torch.matmul(feat_X, feat_Y.T)
-        labels_X_Y = torch.arange(sim_X_Y.shape[0]).to(sim_X_Y.device).long()
-        sim_mixed_X = torch.matmul(feat, feat_X.T)
-        labels_mixed_X = torch.arange(sim_mixed_X.shape[0]).to(sim_mixed_X.device).long()
+        # sim_X_Y = torch.matmul(feat_X, feat_Y.T)
+        # labels_X_Y = torch.arange(sim_X_Y.shape[0]).to(sim_X_Y.device).long()
+        # sim_mixed_Y = torch.matmul(feat, feat_Y.T)
+        # labels_mixed_X = torch.arange(sim_mixed_X.shape[0]).to(sim_mixed_X.device).long()
         sim_mixed_Y = torch.matmul(feat, feat_Y.T)
         labels_mixed_Y = torch.arange(sim_mixed_Y.shape[0]).to(sim_mixed_Y.device).long()
-        logits = torch.cat([sim_X_Y, sim_mixed_X, sim_mixed_Y], dim=0)
-        labels = torch.cat([labels_X_Y, labels_mixed_X, labels_mixed_Y], dim=0)
+        # logits = torch.cat([sim_X_Y, sim_mixed_X, sim_mixed_Y], dim=0)
+        # labels = torch.cat([labels_X_Y, labels_mixed_X, labels_mixed_Y], dim=0)
+        logits = sim_mixed_Y
+        labels = labels_mixed_Y
         loss = self.CL_criterion(logits, labels)
         return loss
     def train_batch(self, epoch, batch, i, cluster_result):
@@ -821,8 +836,13 @@ class CDSRTrainer(Trainer):
         if self.opt['time_encode']:
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
         else:
+            if self.opt['domain'] =="single":
+                seq = None 
+                if self.opt['main_task'] == "X":
+                    y_seq = None
+                elif self.opt['main_task'] == "Y":
+                    x_seq = None   
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
-
 
         #取倒數10個
         used = 10
@@ -903,24 +923,30 @@ class CDSRTrainer(Trainer):
             loss.backward()
             self.optimizer.step()
         elif self.opt['main_task'] == "X":
-            share_x_result =  self.model.lin_X(seqs_fea[:,-used:]) # b * seq * X_num
-            share_pad_result = self.model.lin_PAD(seqs_fea[:, -used:])  # b * seq * 1 #最後一維，即padding，score要是零
-            share_trans_x_result = torch.cat((share_x_result, share_pad_result), dim=-1)
-
-            # specific_x_result = self.model.lin_X(seqs_fea[:,-used:] + x_seqs_fea[:, -used:])  # b * seq * X_num
-            # # specific_x_result = self.model.lin_X(x_seqs_fea[:, -used:])
-            # specific_x_pad_result = self.model.lin_PAD(x_seqs_fea[:, -used:])  # b * seq * 1
-            # specific_x_result = torch.cat((specific_x_result, specific_x_pad_result), dim=-1)
-
-
-            x_share_loss = self.CS_criterion(
+            if seqs_fea is not None:
+                share_x_result =  self.model.lin_X(seqs_fea[:,-used:]) # b * seq * X_num
+                share_pad_result = self.model.lin_PAD(seqs_fea[:, -used:])  # b * seq * 1 #最後一維，即padding，score要是零
+                share_trans_x_result = torch.cat((share_x_result, share_pad_result), dim=-1)
+                
+                specific_x_result = self.model.lin_X(seqs_fea[:,-used:] + x_seqs_fea[:, -used:])  # b * seq * X_num
+                # specific_x_result = self.model.lin_X(x_seqs_fea[:, -used:])
+                specific_x_pad_result = self.model.lin_PAD(x_seqs_fea[:, -used:])  # b * seq * 1
+                specific_x_result = torch.cat((specific_x_result, specific_x_pad_result), dim=-1)
+                x_share_loss = self.CS_criterion(
                 share_trans_x_result.reshape(-1, self.opt["source_item_num"] + 1),
                 share_x_ground.reshape(-1))  # b * seq
-            # x_loss = self.CS_criterion(
-            #     specific_x_result.reshape(-1, self.opt["source_item_num"] + 1),
-            #     x_ground.reshape(-1))  # b * seq
-            x_share_loss = (x_share_loss * (share_x_ground_mask.reshape(-1))).mean() #只取預測x的部分
-            # x_loss = (x_loss * (x_ground_mask.reshape(-1))).mean()
+                x_share_loss = (x_share_loss * (share_x_ground_mask.reshape(-1))).mean() #只取預測x的部分
+
+            else:
+                # print("seqs_fea is None")
+                specific_x_result = self.model.lin_X(x_seqs_fea[:, -used:])
+                specific_x_pad_result = self.model.lin_PAD(x_seqs_fea[:, -used:])  # b * seq * 1
+                specific_x_result = torch.cat((specific_x_result, specific_x_pad_result), dim=-1)
+
+            x_loss = self.CS_criterion(
+                specific_x_result.reshape(-1, self.opt["source_item_num"] + 1),
+                x_ground.reshape(-1))  # b * seq
+            x_loss = (x_loss * (x_ground_mask.reshape(-1))).mean()
             
             if self.opt['training_mode'] =="joint_learn":
                 if self.opt["ssl"]=="time_CL":
@@ -940,36 +966,43 @@ class CDSRTrainer(Trainer):
                     loss = x_share_loss + x_loss + NNCL_loss
                     self.NNCL_loss += NNCL_loss.item()
             else:
-                # loss = x_share_loss + x_loss
-                loss = x_share_loss
-            
-            # self.prediction_loss += (x_share_loss.item() + x_loss.item())
-            self.prediction_loss += x_share_loss.item()
+                if seqs_fea is not None:
+                    loss = x_share_loss + x_loss
+                    self.prediction_loss += (x_share_loss.item() + x_loss.item())
+                else:
+                    loss = x_loss
+                    self.prediction_loss += x_loss.item()
             loss.backward()
             self.optimizer.step()
         elif self.opt['main_task'] == "Y":
-            share_y_result =  self.model.lin_Y(seqs_fea[:,-used:]) # b * seq * X_num
-            share_pad_result = self.model.lin_PAD(seqs_fea[:, -used:])  # b * seq * 1 #最後一維，即padding，score要是零
-            share_trans_y_result = torch.cat((share_y_result, share_pad_result), dim=-1)
+            if seqs_fea is not None:
+                share_y_result =  self.model.lin_Y(seqs_fea[:,-used:]) # b * seq * X_num
+                share_pad_result = self.model.lin_PAD(seqs_fea[:, -used:])  # b * seq * 1 #最後一維，即padding，score要是零
+                share_trans_y_result = torch.cat((share_y_result, share_pad_result), dim=-1)
 
-            specific_y_result = self.model.lin_Y(seqs_fea[:,-used:] + y_seqs_fea[:, -used:])  # b * seq * X_num
-            specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])  # b * seq * 1
-            specific_y_result = torch.cat((specific_y_result, specific_y_pad_result), dim=-1)
+                specific_y_result = self.model.lin_Y(seqs_fea[:,-used:] + y_seqs_fea[:, -used:])  # b * seq * X_num
+                # specific_y_result = self.model.lin_Y(y_seqs_fea[:, -used:])
+                specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])  # b * seq * 1
+                specific_y_result = torch.cat((specific_y_result, specific_y_pad_result), dim=-1)
+                y_share_loss = self.CS_criterion(
+                share_trans_y_result.reshape(-1, self.opt["target_item_num"] + 1),share_y_ground.reshape(-1))
+                y_share_loss = (y_share_loss * (share_y_ground_mask.reshape(-1))).mean() # 只取預測y的部分
+            else:
+                specific_y_result = self.model.lin_Y(y_seqs_fea[:, -used:])
+                specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])
+                specific_y_result = torch.cat((specific_y_result, specific_y_pad_result), dim=-1)
 
-            y_share_loss = self.CS_criterion(
-                share_trans_y_result.reshape(-1, self.opt["target_item_num"] + 1),
-                share_y_ground.reshape(-1))  # b * seq
+              # b * seq
             y_loss = self.CS_criterion(
                 specific_y_result.reshape(-1, self.opt["target_item_num"] + 1),
                 y_ground.reshape(-1))  # b * seq
-            y_share_loss = (y_share_loss * (share_y_ground_mask.reshape(-1))).mean() #只取預測y的部分
             y_loss = (y_loss * (y_ground_mask.reshape(-1))).mean()
             
             if self.opt['training_mode'] =="joint_learn":
                 if self.opt["ssl"]=="time_CL":
                     loss = y_share_loss + y_loss  + time_CL_loss
                     self.time_CL_loss += time_CL_loss.item()
-                elif self.opt["ssl"]=="augmentation_based_CL":
+                elif self.opt["ssl"] == "augmentation_based_CL":
                     loss = y_share_loss +  y_loss + augmentation_based_CL_loss
                     self.augmentation_based_CL_loss += augmentation_based_CL_loss.item()
                 elif self.opt["ssl"]=="proto_CL":
@@ -983,9 +1016,14 @@ class CDSRTrainer(Trainer):
                     loss = y_share_loss + y_loss + NNCL_loss
                     self.NNCL_loss += NNCL_loss.item()
             else:
-                loss = y_share_loss + y_loss
-            
-            self.prediction_loss += (y_share_loss.item() + y_loss.item())
+                if seqs_fea is not None:
+                    loss = y_share_loss + y_loss
+                    self.prediction_loss += (y_share_loss.item() + y_loss.item())
+                else:
+                    loss = y_loss
+                    self.prediction_loss += y_loss.item()
+
+            # self.prediction_loss += y_loss.item()
             loss.backward()
             self.optimizer.step()
         return loss.item()
@@ -1079,7 +1117,7 @@ class CDSRTrainer(Trainer):
             print('val epoch:%d, time: %f(s), X (MRR: %.4f, NDCG@10: %.4f, HR@10: %.4f), Y (MRR: %.4f, NDCG@10: %.4f, HR@10: %.4f)'
                 % (epoch, time.time() - begin_time, val_X_MRR, val_X_NDCG_10, val_X_HR_10, val_Y_MRR, val_Y_NDCG_10, val_Y_HR_10))
 
-            if val_X_MRR > max(X_dev_score_history) or val_Y_MRR > max(Y_dev_score_history):
+            if ((self.opt['main_task'] == "X" or self.opt['main_task'] == "dual") and (val_X_MRR > max(X_dev_score_history))) or ((self.opt['main_task'] == "Y" or self.opt['main_task'] == "dual")and(val_Y_MRR > max(Y_dev_score_history))):
                 patience = self.opt["finetune_patience"]
                 test_X_pred, test_Y_pred,test_loss_X,test_loss_Y = self.get_evaluation_result(mixed_test_dataloader, mode = "test")
                 test_X_MRR, test_X_NDCG_5, test_X_NDCG_10, test_X_HR_1, test_X_HR_5, test_X_HR_10 = self.cal_test_score(test_X_pred)
@@ -1091,24 +1129,26 @@ class CDSRTrainer(Trainer):
                 result_str = 'Epoch {}: \n'.format(epoch) 
                 
                 print("")
-                if val_X_MRR > max(X_dev_score_history):
-                    print("X best!")
-                    print([test_X_MRR, test_X_NDCG_10, test_X_HR_10])
-                    best_X_test = [test_X_MRR, test_X_NDCG_10, test_X_HR_10]
-                    result_str += "X domain:" + str([test_X_MRR, test_X_NDCG_10, test_X_HR_10])+"\n"
-                    model_save_dir = f"./models/{self.opt['data_dir']}/{self.opt['id']}/{self.opt['seed']}"
-                    print(f"write models into path {model_save_dir} for embedding plotting")
-                    Path(model_save_dir).mkdir(parents=True, exist_ok=True)
-                    self.save(f"{model_save_dir}/X_model.pt")
-                if val_Y_MRR > max(Y_dev_score_history):
-                    print("Y best!")
-                    print([test_Y_MRR, test_Y_NDCG_10, test_Y_HR_10])
-                    best_Y_test = [test_Y_MRR, test_Y_NDCG_10, test_Y_HR_10]
-                    result_str += "Y domain:" + str([test_Y_MRR, test_Y_NDCG_10, test_Y_HR_10])+"\n"
-                    model_save_dir = f"./models/{self.opt['data_dir']}/{self.opt['id']}/{self.opt['seed']}"
-                    print(f"write models into path {model_save_dir} for embedding plotting")
-                    Path(model_save_dir).mkdir(parents=True, exist_ok=True)
-                    self.save(f"{model_save_dir}/Y_model.pt")
+                if self.opt['main_task'] == "X" or self.opt['main_task'] == "dual":
+                    if val_X_MRR > max(X_dev_score_history):
+                        print("X best!")
+                        print([test_X_MRR, test_X_NDCG_10, test_X_HR_10])
+                        best_X_test = [test_X_MRR, test_X_NDCG_10, test_X_HR_10]
+                        result_str += "X domain:" + str([test_X_MRR, test_X_NDCG_10, test_X_HR_10])+"\n"
+                        model_save_dir = f"./models/{self.opt['data_dir']}/{self.opt['id']}/{self.opt['seed']}"
+                        print(f"write models into path {model_save_dir}")
+                        Path(model_save_dir).mkdir(parents=True, exist_ok=True)
+                        self.save(f"{model_save_dir}/X_model.pt")
+                if self.opt['main_task'] == "Y" or self.opt['main_task'] == "dual":
+                    if val_Y_MRR > max(Y_dev_score_history):
+                        print("Y best!")
+                        print([test_Y_MRR, test_Y_NDCG_10, test_Y_HR_10])
+                        best_Y_test = [test_Y_MRR, test_Y_NDCG_10, test_Y_HR_10]
+                        result_str += "Y domain:" + str([test_Y_MRR, test_Y_NDCG_10, test_Y_HR_10])+"\n"
+                        model_save_dir = f"./models/{self.opt['data_dir']}/{self.opt['id']}/{self.opt['seed']}"
+                        print(f"write models into path {model_save_dir}")
+                        Path(model_save_dir).mkdir(parents=True, exist_ok=True)
+                        self.save(f"{model_save_dir}/Y_model.pt")
                 file_logger.log(result_str)
             else:
                 patience -=1
@@ -1157,6 +1197,8 @@ class CDSRTrainer(Trainer):
                 HR_10 += 1
             if valid_entity % 100 == 0:
                 print('.', end='')
+        if valid_entity == 0:
+            valid_entity = 1
         return MRR/valid_entity, NDCG_5 / valid_entity, NDCG_10 / valid_entity, HR_1 / valid_entity, HR_5 / valid_entity, HR_10 / valid_entity
 
     def get_evaluation_result_for_test(self, evaluation_batch, mode = "valid"):
@@ -1203,8 +1245,14 @@ class CDSRTrainer(Trainer):
         if self.opt['time_encode']:
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
         else:
+            if self.opt['domain'] =="single":
+                seq = None
+                if self.opt['main_task'] == "X":
+                    y_seq = None
+                elif self.opt['main_task'] == "Y":
+                    x_seq = None
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
-
+        # print(x_seq)
         X_pred = []
         X_pred_female = []
         X_pred_male = []
@@ -1213,28 +1261,44 @@ class CDSRTrainer(Trainer):
         Y_pred_male = []
         batch_loss_X = 0
         batch_loss_Y = 0
-        for id, (fea,gender) in enumerate(zip(seqs_fea,gender)): # b * s * f
+        if self.opt['domain'] =="single":
+            seq = None
+            if self.opt['main_task'] == "X":
+                tmp = x_seq
+            elif self.opt['main_task'] == "Y":
+                tmp = y_seq
+        else:
+            tmp =seq
+        for id, (fea, gender) in enumerate(zip(tmp,gender)): # b * s * f
             # print("seqs_fea:", seqs_fea.shape) #[2029, 15, 256] 
             if XorY[id] == 0: #if x domain
-                share_fea = seqs_fea[id, -1]
                 # print("share_fea:", share_fea.shape)#[256]
                 specific_fea = x_seqs_fea[id, X_last[id]]
-                X_score = self.model.lin_X(share_fea + specific_fea).squeeze(0) #256-> self.opt["source_item_num"]
-                # X_score = self.model.lin_X(share_fea).squeeze(0)
+                if seqs_fea is not None:
+                    # print("seqs_fea:", seqs_fea.shape)
+                    share_fea = seqs_fea[id, -1]
+                    X_score = self.model.lin_X(share_fea + specific_fea).squeeze(0) #256-> self.opt["source_item_num"]
+                else:
+                    X_score = self.model.lin_X(specific_fea).squeeze(0)
                 cur = X_score[ground_truth[id]] 
                 score_larger = (X_score[neg_list[id]] > (cur + 0.00001)).data.cpu().numpy() #1000
                 true_item_rank = np.sum(score_larger) + 1
                 if gender[0]==0:
+                    # print("female:",x_seq[id])
                     X_pred_female.append(true_item_rank)
                 elif gender[0]==1:
+                    # print("male:",x_seq[id])
                     X_pred_male.append(true_item_rank)
                 X_pred.append(true_item_rank)
                 batch_loss_X+=self.val_criterion(X_score, ground_truth[id]).item()
             else :
-                share_fea = seqs_fea[id, -1]
+                # share_fea = seqs_fea[id, -1]
                 specific_fea = y_seqs_fea[id, Y_last[id]]
-                Y_score = self.model.lin_Y(share_fea + specific_fea).squeeze(0)
-                # Y_score = self.model.lin_Y(share_fea).squeeze(0)
+                if seqs_fea is not None:
+                    share_fea = seqs_fea[id, -1]
+                    Y_score = self.model.lin_Y(share_fea + specific_fea).squeeze(0)
+                else:
+                    Y_score = self.model.lin_Y(specific_fea).squeeze(0)
                 cur = Y_score[ground_truth[id]]
                 score_larger = (Y_score[neg_list[id]] > (cur + 0.00001)).data.cpu().numpy()
                 true_item_rank = np.sum(score_larger) + 1
@@ -1250,6 +1314,7 @@ class CDSRTrainer(Trainer):
         test_X_MRR, test_X_NDCG_5, test_X_NDCG_10, test_X_HR_1, test_X_HR_5, test_X_HR_10 = self.cal_test_score(test_X_pred)
         test_Y_MRR, test_Y_NDCG_5, test_Y_NDCG_10, test_Y_HR_1, test_Y_HR_5, test_Y_HR_10 = self.cal_test_score(test_Y_pred)
         test_X_MRR_male, test_X_NDCG_5_male, test_X_NDCG_10_male, test_X_HR_1_male, test_X_HR_5_male, test_X_HR_10_male = self.cal_test_score(test_X_pred_male)
+
         test_X_MRR_female, test_X_NDCG_5_female, test_X_NDCG_10_female, test_X_HR_1_female, test_X_HR_5_female, test_X_HR_10_female = self.cal_test_score(test_X_pred_female)
         test_Y_MRR_male, test_Y_NDCG_5_male, test_Y_NDCG_10_male, test_Y_HR_1_male, test_Y_HR_5_male, test_Y_HR_10_male = self.cal_test_score(test_Y_pred_male)
         test_Y_MRR_female, test_Y_NDCG_5_female, test_Y_NDCG_10_female, test_Y_HR_1_female, test_Y_HR_5_female, test_Y_HR_10_female = self.cal_test_score(test_Y_pred_female)

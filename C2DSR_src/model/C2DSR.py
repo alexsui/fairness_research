@@ -393,21 +393,27 @@ class C2DSR(torch.nn.Module):
 
     def forward(self, o_seqs, x_seqs, y_seqs, position, x_position, y_position, ts_d=None, ts_xd=None, ts_yd=None): #_o_seqs為mixed domain seqs, _x_seqs為source domain seqs, _y_seqs為target domain seqs
         # seqs = self.my_index_select(self.cross_emb, o_seqs) + self.item_emb(o_seqs)
-        seqs = self.item_emb(o_seqs)
-        # print("seqs.shape:", seqs.shape) #[B,sen_len,hidden_units]
-        seqs *= self.item_emb.embedding_dim ** 0.5
-        seqs_fea = self.encoder(o_seqs, seqs, position, ts=ts_d)
-        # print("seqs_fea.shape:", seqs_fea.shape)#[B,sen_len,hidden_units]
-
-        # seqs = self.my_index_select(self.single_emb_X, x_seqs) + self.item_emb_X(x_seqs)
-        seqs = self.item_emb_X(x_seqs)
-        seqs *= self.item_emb.embedding_dim ** 0.5
-        x_seqs_fea = self.encoder_X(x_seqs, seqs, x_position, ts=ts_xd)
-
-        # seqs = self.my_index_select(self.single_emb_Y, y_seqs) + self.item_emb_Y(y_seqs)
-        seqs = self.item_emb_Y(y_seqs)
-        seqs *= self.item_emb.embedding_dim ** 0.5
-        y_seqs_fea = self.encoder_Y(y_seqs, seqs, y_position, ts=ts_yd)
+        if o_seqs is None:
+            seqs_fea = None
+        else:
+            seqs = self.item_emb(o_seqs)
+            # print("seqs.shape:", seqs.shape) #[B,sen_len,hidden_units]
+            seqs *= self.item_emb.embedding_dim ** 0.5
+            seqs_fea = self.encoder(o_seqs, seqs, position, ts=ts_d)
+        if x_seqs is None:
+            x_seqs_fea = None
+        else:
+            # seqs = self.my_index_select(self.single_emb_X, x_seqs) + self.item_emb_X(x_seqs)
+            seqs = self.item_emb_X(x_seqs)
+            seqs *= self.item_emb.embedding_dim ** 0.5
+            x_seqs_fea = self.encoder_X(x_seqs, seqs, x_position, ts=ts_xd)
+        if y_seqs is None:
+            y_seqs_fea = None
+        else:
+            # seqs = self.my_index_select(self.single_emb_Y, y_seqs) + self.item_emb_Y(y_seqs)
+            seqs = self.item_emb_Y(y_seqs)
+            seqs *= self.item_emb.embedding_dim ** 0.5
+            y_seqs_fea = self.encoder_Y(y_seqs, seqs, y_position, ts=ts_yd)
         
         return seqs_fea, x_seqs_fea, y_seqs_fea
 

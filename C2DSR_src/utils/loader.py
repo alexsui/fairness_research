@@ -18,7 +18,7 @@ class DataLoader(DataLoader):
     """
     Load data from json files, preprocess and prepare batches.
     """
-    def __init__(self, filename, batch_size, opt, evaluation, data_type=None, collate_fn=None):
+    def __init__(self, filename, batch_size, opt, evaluation, collate_fn=None):
         self.batch_size = batch_size
         self.opt = opt
         self.eval = evaluation
@@ -26,22 +26,28 @@ class DataLoader(DataLoader):
         self.collate_fn = collate_fn
         
         # ************* item_id *****************
-        opt["source_item_num"],opt["target_item_num"] = self.read_item("./fairness_dataset/" + filename + "/train.txt")
+        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/CIKM/" + filename + "/train.txt")
         opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
         # print(opt["source_item_num"] )
         # print(opt["target_item_num"] )
 
         # ************* sequential data *****************
-
-        source_train_data = "./fairness_dataset/" + filename + "/train.txt"
-        source_valid_data = "./fairness_dataset/" + filename + "/valid.txt"
-        if evaluation==1:
-            if data_type == "mixed":
-                source_test_data = "./fairness_dataset/" + filename + "/mixed_test.txt"
-            # elif data_type == "male":
-            #     source_test_data = "./fairness_dataset/" + filename + "/male_test.txt"
-            # elif data_type == "female":
-            #     source_test_data = "./fairness_dataset/" + filename + "/female_test.txt"
+        if self.opt['domain'] =="cross":
+            source_train_data = "./fairness_dataset/CIKM/" + filename + f"/train.txt"
+            source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/valid.txt"
+            source_test_data = "./fairness_dataset/CIKM/" + filename + f"/test.txt"
+        else:
+            if opt['main_task'] == "X":
+                source_train_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_train.txt"
+                source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_valid.txt"
+            elif opt['main_task'] == "Y":
+                source_train_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_train.txt"
+                source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_valid.txt"
+            if evaluation==1:
+                if opt['main_task'] == "X":
+                    source_test_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_test.txt"
+                elif opt['main_task'] == "Y":
+                    source_test_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_test.txt"
 
         if evaluation < 0:
             self.train_data = self.read_train_data(source_train_data)
@@ -335,7 +341,6 @@ class DataLoader(DataLoader):
 
         for index, d in enumerate(self.train_data): # the pad is needed! but to be careful.
             gender = d[0]
-            
             d = d[1]
             d = [[tmp,0] for tmp in d]
             i_t = copy.deepcopy(d)
@@ -497,8 +502,11 @@ class DataLoader(DataLoader):
                         x_ground_mask[-id] = 1
                         now = xd[-id]
             if sum(x_ground_mask) == 0:
-                print("pass sequence x")
-                continue
+                # print("pass sequence x")
+                if self.opt['domain'] =="single":
+                    pass
+                else:
+                    continue
 
             now = -1
             y_ground = [self.opt["target_item_num"]] * len(yd) # caution!
@@ -520,9 +528,13 @@ class DataLoader(DataLoader):
                         y_ground[-id] = now
                         y_ground_mask[-id] = 1
                         now = yd[-id] - self.opt["source_item_num"]
+                        
             if sum(y_ground_mask) == 0:
-                print("pass sequence y")
-                continue
+                # print("pass sequence y")
+                if self.opt['domain'] =="single":
+                    pass
+                else:
+                    continue
             
             if len(d) < max_len:
                 position = [0] * (max_len - len(d)) + position
