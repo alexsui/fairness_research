@@ -11,6 +11,7 @@ class CLDataCollator:
                             'crop' : Crop(tao = opt["crop_prob"])}
         self.transform = self.augmentation[opt["augment_type"]]
         self.eval = eval
+        
     def __call__(self, batch):
         if self.eval == -1: #for training
             augmented_d = self.augment(batch[1])
@@ -59,3 +60,67 @@ class CLDataCollator:
                 augmented_seq.append(aug_item_seq)
             augmented_seqs.append(augmented_seq)
         return augmented_seqs
+class GDataCollator:
+    def __init__(self, opt) -> None:
+        self.opt = opt
+        
+    def __call__(self, batch):
+        seq,target_sentences, masked_seqs, neg_seqs = self.augment(batch[1])    
+        # ipdb.set_trace()
+        return (torch.LongTensor(batch[0]), torch.LongTensor(seq), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),\
+                torch.LongTensor(batch[4]),torch.LongTensor(batch[5]),torch.LongTensor(masked_seqs),torch.LongTensor(neg_seqs),torch.LongTensor(target_sentences),torch.LongTensor(batch[6]))
+                        
+    def augment(self,item_seqs):
+        max_len = self.opt["maxlen"]
+        target_sentences = []
+        masked_seqs = []
+        neg_seqs = []
+        d = []
+        for seq in item_seqs:
+            target_sentence = []
+            masked_seq = []
+            neg_seq = []
+            #確保至少mask一個X或Y item
+            last_x = [s for s in seq if s < self.opt["source_item_num"]][-1]
+            x_idx = seq.index(last_x)
+            last_y = [s for s in seq if s >= self.opt["source_item_num"]][-1]
+            y_idx = seq.index(last_y)
+            for i in seq:
+                if self.opt["generate_type"] == "X":
+                    condition = i < self.opt["source_item_num"]
+                    
+                elif self.opt["generate_type"] == "Y":
+                    condition = (i >= self.opt["source_item_num"]) and (i!= self.opt["source_item_num"] + self.opt["target_item_num"])
+                else:
+                    condition = i!= self.opt["source_item_num"] + self.opt["target_item_num"]
+                if condition and (random.random() < self.opt['mask_prob']):
+                    masked_seq.append(self.opt["source_item_num"] + self.opt["target_item_num"]+1)
+                    neg = random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(seq),1)[0]
+                    neg_seq.append(neg)
+                    target_sentence.append(i)
+                else:
+                    masked_seq.append(i)
+                    neg_seq.append(i)
+                    target_sentence.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+            if self.opt["generate_type"] == "mixed":
+                masked_seq[-1] = self.opt["source_item_num"] + self.opt["target_item_num"]+1
+                neg_seq[-1] = random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(seq),1)[0]
+                target_sentence[-1] = seq[-1]
+            elif self.opt["generate_type"] == "X":
+                masked_seq[x_idx] = self.opt["source_item_num"] + self.opt["target_item_num"]+1
+                neg_seq[x_idx] = random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(seq),1)[0]
+                target_sentence[x_idx] = seq[x_idx]
+            elif self.opt["generate_type"] == "Y":
+                masked_seq[y_idx] = self.opt["source_item_num"] + self.opt["target_item_num"]+1
+                neg_seq[y_idx] = random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(seq),1)[0]
+                target_sentence[y_idx] = seq[y_idx]
+            
+            masked_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(masked_seq)) + masked_seq
+            neg_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(neg_seq)) + neg_seq
+            target_sentence = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(target_sentence)) + target_sentence
+            seq = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(seq)) + seq
+            d.append(seq)
+            target_sentences.append(target_sentence)
+            masked_seqs.append(masked_seq)
+            neg_seqs.append(neg_seq)
+        return d,target_sentences, masked_seqs, neg_seqs

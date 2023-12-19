@@ -104,6 +104,7 @@ parser.add_argument(
     default="proto_CL",
     help="[time_CL, augmentation_based_CL, no_ssl, proto_CL]",
 )
+
 # early stop
 parser.add_argument("--pretrain_patience", type=int, default=1000, help="early stop counter")
 parser.add_argument("--finetune_patience", type=int, default=5, help="early stop counter")
@@ -153,98 +154,82 @@ parser.add_argument('--mixed_included',type=bool, default= False ,help="mixed in
 parser.add_argument('--main_task',type=str, default="X" ,help="[dual, X, Y]")
 
 parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
-parser.add_argument('--domain',type=str,default= "cross" ,help="target only or cross domain")
+parser.add_argument('--domain', type=str,default= "cross" ,help="target only or cross domain")
+parser.add_argument('--topk', type=int,default= 5 ,help="topk item recommendation")
 args, unknown = parser.parse_known_args()
 
-modes = [
-    # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
-    # "fairness_baseline_Y_triple_pull"
-    # "fairness_baseline_single_domain_X","fairness_baseline_single_domain_Y"
-    "fairness_baseline_X","fairness_baseline_Y"
-]
-# training_modes = ["evaluation","evaluation"]
-# evaluation_models = ["fairness_baseline_single_domain_X", "fairness_baseline_single_domain_Y"]
-training_modes = ["finetune","finetune"]
-# evaluation_models = ["fairness_baseline_X","fairness_baseline_Y"]
-pretrain_models =["fairness_baseline_X_single_domain","fairness_baseline_Y_single_domain"]
-domain = ["cross","cross"]
-main_tasks = ["X","Y"]
-# param_group = True
-# pretrain_models = [] # for cross domain finetuning
-# 14_48 X
-# 1_5 X
-# 1_10 Y
-# 14_33 X	
-# data_dir = ["1_10","5_19","10_19"]
-# data_dir = ["14_48","1_5","1_10","14_33"]
+# modes = [
+#     # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
+#     # "fairness_baseline_Y_triple_pull"
+#     # "fairness_baseline_X_eval","fairness_baseline_X_single_domain_eval",
+#     "fairness_Y_generator_20epoch_eval","fairness_Y_generator_40epoch_eval","fairness_Y_generator_60epoch_eval"
+# ]
+# training_modes = ["evaluation","evaluation","evaluation"]
+# evaluation_models = ["fairness_Y_generator_20epoch","fairness_Y_generator_40epoch","fairness_Y_generator_60epoch"]
+# domain = ["cross","cross","cross"]
+# main_tasks = ["Y","Y","Y"]
 
-folder_list = glob.glob("./fairness_dataset/CIKM/*")
+# folder_list = glob.glob("./fairness_dataset/Movie_lens_new/*")
+# folder_list = [x.split("/")[-1] for x in folder_list]
+# data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
+# load_pretrain_epochs = [20, 40, 60]
+# print(data_dir)
+# # data_dir = ["adventure_romance","horror_romance","thriller_romance"]
+# # data_dir=["4_34"]
+# warmup_epoch = 1000 # prevent from doing clustering 
+# print("Config of Experiment:")
+# print(f"Modes: {modes}")
+# print("training_mode:", training_modes)
+# print(f"Data: {data_dir}")
+# num_seeds = 5
+# for data_idx in range(len(data_dir)):
+#     data_name = data_dir[data_idx]
+#     for i, mode in enumerate(modes):
+#         for seed in range(1, num_seeds+1):
+#             args.training_mode = training_modes[i]
+#             args.domain = domain[i]
+#             args.main_task = main_tasks[i]     
+#             args.load_pretrain_epoch = load_pretrain_epochs[i]  
+#             args.evaluation_model = evaluation_models[i]
+#             args.data_dir = data_name
+#             args.id = mode
+#             args.seed = seed
+            
+#             args.warmup_epoch = warmup_epoch
+#             args.num_cluster = "2,3,4"
+#             main(args)
+
+ # for finetune
+folder_list = glob.glob("./fairness_dataset/Movie_lens_new/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-print(data_dir)
-warmup_epoch = 1000 # prevent from doing clustering 
+
+load_pretrain_epochs = [20,40]
+training_mode = "finetune"
+pretrain_models = ["X","Y","mixed"]
+generate_nums = [3, 5, 7]
+main_task = "Y"
+domain = "cross"
 print("Config of Experiment:")
-print(f"Modes: {modes}")
-print("training_mode:", training_modes)
+print(f"load_pretrain_epochs: {load_pretrain_epochs}")
 print(f"Data: {data_dir}")
 num_seeds = 5
 for data_idx in range(len(data_dir)):
     data_name = data_dir[data_idx]
-    for i, mode in enumerate(modes):
-        for seed in range(1, num_seeds+1):
-            args.training_mode = training_modes[i]
-            
-            args.domain = domain[i]
-            args.main_task = main_tasks[i]       
-            args.pretrain_model = pretrain_models[i]
-            # args.evaluation_model = evaluation_models[i]
-            # args.param_group = param_group
-            args.data_dir = data_name
-            args.id = mode
-            args.seed = seed
-            
-            args.warmup_epoch = warmup_epoch
-            args.num_cluster = "2,3,4"
-            main(args)
-
- # for finetune
-# load_pretrain_epochs = [20,40]
-# pretrain_models = [
-#                    "pretrain_proto_CL_dropout_cluster600_800_joint_pretrain_mixed_pred",
-#                    "pretrain_proto_CL_dropout_cluster500_1000_joint_pretrain_mixed_pred"]
-# # data_dir = ["Food-Kitchen"]
-# clusters = ["600,700,800","500,750,1000"]
-# data_dir = ["Food-Kitchen","Movie-Book"]
-# # data_dir = ["Movie-Book"]
-# training_mode = "joint_learn"
-# param_group = False
-# mixed_included =True
-# time_encode = False
-# ssl = "proto_CL"
-# warmup_epoch = 1
-# print("Config of Experiment:")
-# print(f"pretrain_models: {pretrain_models}")
-# print(f"load_pretrain_epochs: {load_pretrain_epochs}")
-# print(f"Data: {data_dir}")
-# num_seeds = 3
-# for data_idx in range(len(data_dir)):
-#     data_name = data_dir[data_idx]
-#     for i, model in enumerate(pretrain_models):
-#         for epoch in load_pretrain_epochs:
-#             for seed in range(1, num_seeds+1):
+    for i, model in enumerate(pretrain_models):
+        for epoch in load_pretrain_epochs:
+            for seed in range(1, num_seeds+1):
                 
-#                 args.time_encode = time_encode
-#                 args.pretrain_model = model
-#                 args.load_pretrain_epoch = epoch           
-#                 args.training_mode = training_mode
-#                 args.ssl = ssl
-#                 args.data_dir = data_name
-#                 args.num_cluster = clusters[i]
-#                 args.param_group = param_group
-#                 model_name = "_".join(model.split("_")[1:])
-#                 id =f"finetune_{model_name}_epoch{str(epoch)}_finetune_mixed_cluster"
-#                 args.id = id
-#                 args.seed = seed
-#                 args.mixed_included = mixed_included
-#                 args.warmup_epoch = warmup_epoch
-#                 main(args)
+                args.pretrain_model = model
+                args.load_pretrain_epoch = epoch           
+                args.training_mode = training_mode
+                args.domain = domain
+                args.main_task = main_task
+                args.data_dir = data_name
+                id =f"fairness_main_task{main_task}_generator{pretrain_models}_{epoch}epoch"
+                args.id = id
+                
+                args.seed = seed
+                args.num_cluster = "2,3,4"
+                args.warmup_epoch = 10000
+                main(args)

@@ -14,6 +14,8 @@ from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
 from utils.augmentation import *
 import pandas as pd 
+from model.C2DSR import Generator
+
 class DataLoader(DataLoader):
     """
     Load data from json files, preprocess and prepare batches.
@@ -25,32 +27,38 @@ class DataLoader(DataLoader):
         self.filename  = filename
         self.collate_fn = collate_fn
         
+        
+        self.opt["maxlen"] = 50
         # ************* item_id *****************
-        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/CIKM/" + filename + "/train.txt")
+        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/Movie_lens_new/" + filename + "/train.txt")
         opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
+        
         # print(opt["source_item_num"] )
         # print(opt["target_item_num"] )
 
         # ************* sequential data *****************
-        if self.opt['domain'] =="cross":
-            source_train_data = "./fairness_dataset/CIKM/" + filename + f"/train.txt"
-            source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/valid.txt"
-            source_test_data = "./fairness_dataset/CIKM/" + filename + f"/test.txt"
-        else:
-            if opt['main_task'] == "X":
-                source_train_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_train.txt"
-                source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_valid.txt"
-            elif opt['main_task'] == "Y":
-                source_train_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_train.txt"
-                source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_valid.txt"
-            if evaluation==1:
-                if opt['main_task'] == "X":
-                    source_test_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_test.txt"
-                elif opt['main_task'] == "Y":
-                    source_test_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_test.txt"
+        # if self.opt['domain'] =="cross":
+        source_train_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/train.txt"
+        source_valid_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/valid.txt"
+        source_test_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/test.txt"
+        # else:
+        #     if opt['main_task'] == "X":
+        #         source_train_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_train.txt"
+        #         source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_valid.txt"
+        #     elif opt['main_task'] == "Y":
+        #         source_train_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_train.txt"
+        #         source_valid_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_valid.txt"
+        #     if evaluation==1:
+        #         if opt['main_task'] == "X":
+        #             source_test_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[0]}_test.txt"
+        #         elif opt['main_task'] == "Y":
+        #             source_test_data = "./fairness_dataset/CIKM/" + filename + f"/single_cate_id_{filename.split('_')[1]}_test.txt"
 
         if evaluation < 0:
             self.train_data = self.read_train_data(source_train_data)
+            self.generator = Generator(opt)
+            self.load_generator(opt["data_dir"])
+            self.item_generate()
             data = self.preprocess()
             print("train_data length:",len(data))
         elif evaluation == 2:
@@ -79,7 +87,47 @@ class DataLoader(DataLoader):
         # chunk into batches
         data = [data[i:i+batch_size] for i in range(0, len(data), batch_size)]
         self.data = data
-
+    
+    def load_generator(self, data_name):
+        checkpoint = torch.load(f"./generator_model/{data_name}/{self.opt['pretrain_model']}/{str(self.opt['load_pretrain_epoch'])}/model.pt")    
+        state_dict = checkpoint['model']
+        self.generator.load_state_dict(state_dict)
+        print("\033[01;32m Generator loaded! \033[0m")
+    def item_generate(self):
+        female_seq = [d for d in self.train_data if d[0]==0]
+        male_seq = [d for d in self.train_data if d[0]==1]
+        l = []
+        positions= []
+        for gender,seq in female_seq:
+            idxs = random.choices(list(range(0, len(seq))), k = self.opt['generate_num'])
+            new_seq = copy.deepcopy(seq)
+            for index in idxs:
+                new_seq.insert(index, self.opt['itemnum'])
+            position = list(range(len(new_seq)+1))[1:]
+            new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + new_seq
+            position = [0] * (self.opt["maxlen"] - len(position)) + position
+            l.append(new_seq)
+            positions.append(position)
+        torch_seq = torch.LongTensor(l) #[X,max_len]
+        mask = torch_seq == self.opt['itemnum']
+        torch_position = torch.LongTensor(positions) #[X,max_len]
+        self.generator.eval()
+        self.generator.cuda()
+        torch_seq = torch_seq.cuda()
+        torch_position = torch_position.cuda()
+        with torch.no_grad():
+            seq_fea = self.generator(torch_seq,torch_position) #[X,max_len,item_num]
+            target_fea = seq_fea[mask]
+            target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
+            probabilities = torch.nn.functional.softmax(target_fea, dim=1)
+            sampled_indices = torch.multinomial(probabilities, 1, replacement=True).squeeze()
+            if self.opt['pretrain_model'] == "Y":
+                sampled_indices = sampled_indices + self.opt['source_item_num']
+            torch_seq[mask] = sampled_indices
+            new_female_seq = torch_seq.tolist() 
+        new_female_seq = [(0,[x for x in sublist if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for sublist in new_female_seq]
+        self.train_data = new_female_seq + male_seq
+        
     def read_item(self, fname):
         with codecs.open(fname, "r", encoding="utf-8") as fr:
             item_num = [int(d.strip()) for d in fr.readlines()[:2]]
@@ -98,24 +146,6 @@ class DataLoader(DataLoader):
                 line = list(map(int, line.split()))[1:]
                 data = (line[0],line[1:])
                 train_data.append(data)
-                # for w in line:
-                #     w = w.split(" ")
-                #     res.append((int(w[0]), int(w[1])))
-                # # res.sort(key=takeSecond)
-                # # res_2 = [] 
-                # # for r in res:
-                # #     res_2.append((int(r[0]),int(r[1])))   
-                # train_data.append(res)
-                
-                # for w in line:
-                #     w = w.split("|")
-                #     res.append((int(w[0]), int(w[1])))
-                # res.sort(key=takeSecond)
-                # res_2 = []
-                # for r in res:
-                # res_2.append(r[0])
-                # train_data.append(res_2)
-                
         return train_data
 
     def read_test_data(self, test_file):
@@ -165,6 +195,144 @@ class DataLoader(DataLoader):
         scaler = StandardScaler()
         time_features = scaler.fit_transform(time_features)
         return time_features
+    # def preprocess_for_predict(self):
+
+    #     if "Enter" in self.filename:
+    #         max_len = 30
+    #         self.opt["maxlen"] = 30
+    #     else:
+    #         max_len = 50
+    #         self.opt["maxlen"] = 50
+
+    #     processed=[]
+    #     for index, data in enumerate(self.test_data): # the pad is needed! but to be careful. [res[0], res_2, 1, res[1][-1]]
+    #         ipdb.set_trace()
+    #         gender = data[-1]
+    #         data[0] = [[tmp,0] for tmp in data[0]]
+    #         position = list(range(len(data[0])+1))[1:]
+    #         xd = []
+    #         xcnt = 1
+    #         x_position = []
+    #         ts_xd = []
+
+    #         yd = []
+    #         ycnt = 1
+    #         y_position = []
+    #         ts_yd = []
+
+            
+    #         masked_xd = []
+    #         neg_xd = []
+    #         masked_yd = []
+    #         neg_yd = []
+    #         for item,ts in data[0]:
+                
+    #             if item < self.opt["source_item_num"]:
+    #                 xd.append(item)
+    #                 x_position.append(xcnt)
+    #                 xcnt += 1
+    #                 yd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                 y_position.append(0)
+    #                 ts_xd.append(ts)
+    #                 ts_yd.append(0)
+    #                 if self.opt['ssl'] =="mask_prediction":
+    #                     if random.random() < self.opt['mask_prob']:
+    #                         masked_xd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                         neg_xd.append(random.sample(set(range(self.opt['source_item_num'])) - set(xd),1)[0])
+    #                     else:
+    #                         masked_xd.append(item)
+    #                         neg_xd.append(item)
+    #                     masked_yd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                     neg_yd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+                    
+    #             else:
+    #                 xd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                 x_position.append(0)
+    #                 yd.append(item)
+    #                 y_position.append(ycnt)
+    #                 ycnt += 1
+    #                 ts_xd.append(0)
+    #                 ts_yd.append(ts)
+    #                 if self.opt['ssl'] =="mask_prediction":
+    #                     masked_xd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                     neg_xd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                     if random.random()<self.opt['mask_prob']:
+    #                         masked_yd.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+    #                         neg_yd.append(random.sample(set(range(self.opt['source_item_num'],self.opt['source_item_num']+self.opt['target_item_num'])) - set(yd),1)[0])
+    #                     else:
+    #                         masked_yd.append(item)
+    #                         neg_yd.append(item)
+    #         if self.opt['ssl'] =="mask_prediction":
+    #             try:
+    #                 reversed_list = masked_xd[::-1]
+    #                 idx = len(masked_xd) - reversed_list.index(next(filter(lambda x: x != self.opt["source_item_num"] + self.opt["target_item_num"], reversed_list))) - 1
+    #                 masked_xd[idx] = self.opt["source_item_num"] + self.opt["target_item_num"]
+    #                 neg_xd[idx] =random.sample(set(range(self.opt['source_item_num'])) - set(xd),1)[0]
+    #                 reversed_list = masked_yd[::-1]
+    #                 idx = len(masked_yd) - reversed_list.index(next(filter(lambda x: x != self.opt["source_item_num"] + self.opt["target_item_num"], reversed_list))) - 1
+    #                 masked_yd[idx] =self.opt["source_item_num"] + self.opt["target_item_num"]
+    #                 neg_yd[idx] =random.sample(set(range(self.opt['source_item_num'],self.opt['source_item_num']+self.opt['target_item_num'])) - set(yd),1)[0]
+    #             except StopIteration:
+    #                 continue
+                
+    #         ts_d = [t for i,t in data[0]]
+    #         seq = [item for item,ts in data[0]]
+    #         # if self.opt['time_encode']:
+    #         #     ts_d = self.time_transformation(ts_d)
+    #         #     ts_xd = self.time_transformation(ts_xd)
+    #         #     ts_yd = self.time_transformation(ts_yd)
+    #         if len(data[0]) < max_len:
+    #             position = [0] * (max_len - len(data[0])) + position
+    #             x_position = [0] * (max_len - len(data[0])) + x_position
+    #             y_position = [0] * (max_len - len(data[0])) + y_position
+
+    #             xd = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(data[0])) + xd
+    #             yd = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(data[0])) + yd
+    #             seq = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(data[0])) + seq
+                
+    #             ts_xd = [0] * (max_len - len(ts_xd)) + ts_xd
+    #             ts_yd = [0] * (max_len - len(ts_yd)) + ts_yd
+    #             ts_d = [0]*(max_len - len(ts_d)) + ts_d
+    #             masked_xd = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(masked_xd)) + masked_xd
+    #             neg_xd = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(neg_xd)) + neg_xd
+    #             masked_yd = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(masked_yd)) + masked_yd
+    #             neg_yd = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(neg_yd)) + neg_yd
+    #             gender = [gender]*max_len
+    #         x_last = -1
+    #         for id in range(len(x_position)):
+    #             id += 1
+    #             if x_position[-id]:
+    #                 x_last = -id
+    #                 break
+
+    #         y_last = -1
+    #         for id in range(len(y_position)):
+    #             id += 1
+    #             if y_position[-id]:
+    #                 y_last = -id
+    #                 break
+
+    #         negative_sample = []
+    #         for i in range(999):
+    #             while True:
+    #                 if data[1] : # in Y domain, the validation/test negative samples
+    #                     sample = random.randint(0, self.opt["target_item_num"] - 1)
+    #                     if sample != data[2] - self.opt["source_item_num"]: #若沒有sample到最後一個item_id
+    #                         negative_sample.append(sample)
+    #                         break
+    #                 else : # in X domain, the validation/test negative samples
+    #                     sample = random.randint(0, self.opt["source_item_num"] - 1)
+    #                     if sample != data[2]:
+    #                         negative_sample.append(sample)
+    #         if data[1]:
+    #             processed.append([seq, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, x_last, y_last, data[1],
+    #                               data[2]-self.opt["source_item_num"], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index,gender])
+    #         else:
+    #             processed.append([seq, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, x_last, y_last, data[1],
+    #                               data[2], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index, gender])
+    #         # ipdb.set_trace()
+    #         print(index)
+    #     return processed
     def preprocess_for_predict(self):
 
         if "Enter" in self.filename:
@@ -294,22 +462,6 @@ class DataLoader(DataLoader):
                         if sample != d[2]:
                             negative_sample.append(sample)
                             break
-            # print("-"*100)
-            # print("seq:",seq)
-            # print("xd:",xd)
-            # print("yd:",yd)
-            # print("position:",position)
-            # print("x_position:",x_position)
-            # print("y_position:",y_position)
-            # print("ts_d:",ts_d)
-            # print("ts_xd:",ts_xd)
-            # print("ts_yd:",ts_yd)
-            # print("x_last:",x_last)
-            # print("y_last:",y_last)
-            # print("d[1]:",d[1])
-            # print("d[2]:",d[2])
-            # print("negative_sample:",negative_sample)
-            # print("-"*100)
             # if self.opt['time_encode']:
             #     ts_d = self.encode_time_features(ts_d)
             #     ts_xd = self.encode_time_features(ts_xd)
@@ -321,6 +473,7 @@ class DataLoader(DataLoader):
                 processed.append([seq, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, x_last, y_last, d[1],
                                   d[2], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index, gender])
         return processed
+
 
     def preprocess(self):
 
@@ -503,10 +656,7 @@ class DataLoader(DataLoader):
                         now = xd[-id]
             if sum(x_ground_mask) == 0:
                 # print("pass sequence x")
-                if self.opt['domain'] =="single":
-                    pass
-                else:
-                    continue
+                continue
 
             now = -1
             y_ground = [self.opt["target_item_num"]] * len(yd) # caution!
@@ -531,10 +681,7 @@ class DataLoader(DataLoader):
                         
             if sum(y_ground_mask) == 0:
                 # print("pass sequence y")
-                if self.opt['domain'] =="single":
-                    pass
-                else:
-                    continue
+                continue
             
             if len(d) < max_len:
                 position = [0] * (max_len - len(d)) + position
@@ -647,6 +794,7 @@ class DataLoader(DataLoader):
             # near_xd = torch.cat((near_xd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(max_len-near_xd.shape[0], near_xd.shape[1])), 0)
             # near_yd = torch.cat((near_yd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(near_yd.shape[0], max_len-near_yd.shape[1])), 1)
             # near_yd = torch.cat((near_yd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(max_len-near_yd.shape[0], near_yd.shape[1])), 0)
+            # ipdb.set_trace()
             processed.append([index, d, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, 
                                   share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd, augment_xd, augment_yd, gender])
         return processed
@@ -685,4 +833,400 @@ class DataLoader(DataLoader):
         for i in range(self.__len__()):
             yield self.__getitem__(i)
 
+class GDataLoader(DataLoader):
+    """
+    Load data from json files, preprocess and prepare batches.
+    """
+    
+    #mask_id = opt["source_item_num"]+ opt["target_item_num"] +1
+    
+    def __init__(self, filename, batch_size, opt, eval, collate_fn=None):
+        self.batch_size = batch_size
+        self.opt = opt
+        self.filename  = filename
+        self.collate_fn = collate_fn
+        self.eval = eval
+        # ************* item_id *****************
+        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/Movie_lens_new/" + filename + "/train.txt")
+        opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
+       
+        if "Enter" in self.filename:
+            max_len = 30
+            self.opt["maxlen"] = 30
+        else:
+            max_len = 50
+            self.opt["maxlen"] = 50
+        self.mask_id = opt["source_item_num"]+ opt["target_item_num"] +1
+        # ************* sequential data *****************
+        # if self.opt['domain'] =="cross":
+        source_train_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/train.txt"
+        source_valid_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/valid.txt"
+        source_test_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/test.txt"
+        if self.eval == -1: 
+            self.train_data = self.read_train_data(source_train_data)
+        else:
+            self.train_data = self.read_train_data(source_valid_data)
+        self.part_sequence = []
+        self.split_sequence()
+        data = self.preprocess()
+        print("pretrain_data length:",len(data))
+        
+        # shuffle for training
+      
+        indices = list(range(len(data)))
+        random.shuffle(indices)
+        data = [data[i] for i in indices]
+        if batch_size > len(data):
+            batch_size = len(data)
+            self.batch_size = batch_size
+        if len(data)%batch_size != 0:
+            data += data[:batch_size]
+        data = data[: (len(data)//batch_size) * batch_size]
+        self.num_examples = len(data)
+
+        # chunk into batches
+        data = [data[i:i+batch_size] for i in range(0, len(data), batch_size)]
+        self.data = data
+
+    def read_item(self, fname):
+        with codecs.open(fname, "r", encoding="utf-8") as fr:
+            item_num = [int(d.strip()) for d in fr.readlines()[:2]]
+        return item_num
+
+    def read_train_data(self, train_file):
+        def takeSecond(elem):
+            return elem[1]
+        with codecs.open(train_file, "r", encoding="utf-8") as infile:
+            train_data = []
+            for id, line in enumerate(infile.readlines()):
+                if id<2:
+                    continue
+                res = []
+                line = line.strip()
+                line = list(map(int, line.split()))[1:]
+                data = (line[0],line[1:])
+                train_data.append(data)
+        
+        return train_data
+    
+    def subtract_min(self,ts):
+        min_value = min(filter(lambda x: x != 0, ts))
+        result_list = [x - min_value if x != 0 else 0 for x in ts]
+        return result_list
+    def encode_time_features(self, timestamps):
+      
+        datetimes = pd.to_datetime(timestamps, unit='s')
+
+        times_of_day = datetimes.hour + datetimes.minute / 60
+        days_of_week = datetimes.weekday
+        days_of_year = datetimes.dayofyear
+        times_of_day_sin = np.sin(2 * np.pi * times_of_day / 24)
+        times_of_day_cos = np.cos(2 * np.pi * times_of_day / 24)
+        days_of_week_sin = np.sin(2 * np.pi * days_of_week / 7)
+        days_of_week_cos = np.cos(2 * np.pi * days_of_week / 7)
+        days_of_year_sin = np.sin(2 * np.pi * days_of_year / 365)
+        days_of_year_cos = np.cos(2 * np.pi * days_of_year / 365)
+
+        time_features = np.vstack((times_of_day_sin, times_of_day_cos,
+                                days_of_week_sin, days_of_week_cos,
+                                days_of_year_sin, days_of_year_cos)).T
+
+        scaler = StandardScaler()
+        time_features = scaler.fit_transform(time_features)
+        return time_features
+    def split_sequence(self):
+        for seq in self.train_data:
+            input_ids = seq[1][-(self.opt["maxlen"]+1):-1] # keeping same as train set
+            for i in range(4,len(input_ids)): # 5 is the minimum length of sequence
+                self.part_sequence.append((seq[0],input_ids[:i+1]))
+                
+    def preprocess(self):
+
+        processed = []
+        max_len =self.opt["maxlen"]
+        for index, d in enumerate(self.part_sequence): # the pad is needed! but to be careful.
+            gender = d[0]
+            d = d[1]
+            d = [[tmp,0] for tmp in d] # add redundant timestamp
+            i_t = copy.deepcopy(d)
+            d = [i[0] for i in d]
+            ground = copy.deepcopy(d)[1:]
+
+            # share_x_ground = []
+            # share_x_ground_mask = []
+            # share_y_ground = []
+            # share_y_ground_mask = []
+            # for w in ground:
+            #     if w < self.opt["source_item_num"]:
+            #         share_x_ground.append(w)
+            #         share_x_ground_mask.append(1)
+            #         share_y_ground.append(self.opt["target_item_num"])
+            #         share_y_ground_mask.append(0)
+            #     else:
+            #         share_x_ground.append(self.opt["source_item_num"])
+            #         share_x_ground_mask.append(0)
+            #         share_y_ground.append(w - self.opt["source_item_num"])
+            #         share_y_ground_mask.append(1)
+                        
+            position = list(range(len(d)+1))[1:]
+            ground_mask = [1] * len(d)
+            
+            i_t = i_t[:-1]
+  
+            masked_d = []
+            neg_d = []
+            ts_d = [t for i,t in i_t]
+            
+            if not [i for i in d if i < self.opt["source_item_num"]]:
+                # print("No X domain item in sequence")
+                continue
+            if not [i for i in d if i >= self.opt["source_item_num"]]:
+
+                # print("No Y domain item in sequence")
+                continue
+            
+            
+            # ts_xd = self.subtract_min(ts_xd)
+            # ts_yd = self.subtract_min(ts_yd)
+            # ts_d = self.subtract_min(ts_d)
+            # if self.opt['time_encode']:
+            #     ts_d = self.encode_time_features(ts_d)
+            #     ts_xd = self.encode_time_features(ts_xd)
+            #     ts_yd = self.encode_time_features(ts_yd)
+            #create masked item sequence
+            target_sentence = []
+            masked_d = []
+            neg_d = []
+            for i in d[:-1]:
+                if (i!= self.opt["source_item_num"] + self.opt["target_item_num"]) and (random.random() < self.opt['mask_prob']):
+                    masked_d.append(self.mask_id)
+                    neg = random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(d),1)[0]
+                    neg_d.append(neg)
+                    target_sentence.append(i)
+                else:
+                    masked_d.append(i)
+                    neg_d.append(i)
+                    target_sentence.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+            masked_d.append(self.mask_id)
+            neg_d.append(random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(d),1)[0])
+            target_sentence.append(d[-1])
+            if len(d) < max_len:
+                position = [0] * (max_len - len(d)) + position
+                ground = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(d)) + ground
+                ground_mask = [0] * (max_len - len(d)) + ground_mask
+                # d = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(d)) + d
+                # masked_d = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(masked_d)) + masked_d
+                # neg_d = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(neg_d)) + neg_d
+                ts_d = [0]*(max_len - len(ts_d)) + ts_d
+                gender = [gender]*max_len
+                # target_sentence = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(target_sentence)) + target_sentence
+            else:
+                print("pass")
+            # ipdb.set_trace()
+            processed.append([index, d, position , ts_d, ground, ground_mask, gender])
+        return processed
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, key):
+        """ Get a batch with index. """
+        if not isinstance(key, int):
+            raise TypeError
+        if key < 0 or key >= len(self.data):
+            raise IndexError
+        batch = self.data[key]
+        batch_size = len(batch)
+        batch = list(zip(*batch))
+        if self.collate_fn:
+            batch = self.collate_fn(batch)
+            return batch
+        return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]),\
+                torch.tensor(batch[6]), torch.tensor(batch[7]), torch.tensor(batch[8]),torch.tensor(batch[9]))
+    def __iter__(self):
+        for i in range(self.__len__()):
+            yield self.__getitem__(i)
+
+class NonoverlapDataLoader(DataLoader):
+    def __init__(self, filename, batch_size, opt, eval, collate_fn=None):
+        self.batch_size = batch_size
+        self.opt = opt
+        self.filename  = filename
+        self.collate_fn = collate_fn
+        self.eval = eval
+        # ************* item_id *****************
+        data1,data2 = filename.split("_")   
+        # A_data_name = f"cate_id_{data1}"
+        # B_data_name = f"cate_id_{data2}"
+        if 'sci-fi' == data1:
+            data1 = 'Sci-Fi' 
+        if 'sci-fi' == data2:
+            data2 = 'Sci-Fi'
+        if 'film-noir' == data1:
+            data1 = 'Film-Noir'
+        if 'film-noir' == data2:
+            data2 = 'Film-Noir'
+        # folder_name = f"{data1.lower()}_{data2.lower()}"
+        A_data_name = data1.capitalize() if data1!="Sci-Fi" and data1!="Film-Noir" else data1
+        B_data_name = data2.capitalize() if data2!="Sci-Fi" and data2!="Film-Noir" else data2
+        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/Movie_lens_new/" + filename + f"/nonoverlap_Y_female_{B_data_name}.txt")
+        opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
+       
+        if "Enter" in self.filename:
+            max_len = 30
+            self.opt["maxlen"] = 30
+        else:
+            max_len = 50
+            self.opt["maxlen"] = 50
+        self.mask_id = opt["source_item_num"]+ opt["target_item_num"] +1
+        # ************* sequential data *****************
+        # if self.opt['domain'] =="cross":
+        source_train_data = "./fairness_dataset/Movie_lens_new/" + filename + f"/nonoverlap_Y_female_{B_data_name}.txt"
+        self.train_data = self.read_train_data(source_train_data)
+
+
+        data = self.preprocess()
+        print("pretrain_data length:",len(data))
+        indices = list(range(len(data)))
+        random.shuffle(indices)
+        data = [data[i] for i in indices]
+        if batch_size > len(data):
+            batch_size = len(data)
+            self.batch_size = batch_size
+        if len(data)%batch_size != 0:
+            data += data[:batch_size]
+        data = data[: (len(data)//batch_size) * batch_size]
+        self.num_examples = len(data)
+
+        # chunk into batches
+        data = [data[i:i+batch_size] for i in range(0, len(data), batch_size)]
+        self.data = data
+
+    def read_item(self, fname):
+        with codecs.open(fname, "r", encoding="utf-8") as fr:
+            item_num = [int(d.strip()) for d in fr.readlines()[:2]]
+        return item_num
+
+    def read_train_data(self, train_file):
+        def takeSecond(elem):
+            return elem[1]
+        with codecs.open(train_file, "r", encoding="utf-8") as infile:
+            train_data = []
+            for id, line in enumerate(infile.readlines()):
+                if id<2:
+                    continue
+                res = []
+                line = line.strip()
+                line = list(map(int, line.split()))[1:]
+                data = (line[0],line[1:])
+                train_data.append(data)
+        
+        return train_data
+    
+    def preprocess(self):
+
+        processed = []
+        max_len =self.opt["maxlen"]
+        for index, d in enumerate(self.part_sequence): # the pad is needed! but to be careful.
+            gender = d[0]
+            d = d[1]
+            d = [[tmp,0] for tmp in d] # add redundant timestamp
+            i_t = copy.deepcopy(d)
+            d = [i[0] for i in d]
+            ground = copy.deepcopy(d)[1:]
+
+            # share_x_ground = []
+            # share_x_ground_mask = []
+            # share_y_ground = []
+            # share_y_ground_mask = []
+            # for w in ground:
+            #     if w < self.opt["source_item_num"]:
+            #         share_x_ground.append(w)
+            #         share_x_ground_mask.append(1)
+            #         share_y_ground.append(self.opt["target_item_num"])
+            #         share_y_ground_mask.append(0)
+            #     else:
+            #         share_x_ground.append(self.opt["source_item_num"])
+            #         share_x_ground_mask.append(0)
+            #         share_y_ground.append(w - self.opt["source_item_num"])
+            #         share_y_ground_mask.append(1)
+                        
+            position = list(range(len(d)+1))[1:]
+            ground_mask = [1] * len(d)
+            
+            i_t = i_t[:-1]
+  
+            masked_d = []
+            neg_d = []
+            ts_d = [t for i,t in i_t]
+            
+            if not [i for i in d if i < self.opt["source_item_num"]]:
+                # print("No X domain item in sequence")
+                continue
+            if not [i for i in d if i >= self.opt["source_item_num"]]:
+
+                # print("No Y domain item in sequence")
+                continue
+            
+            
+            # ts_xd = self.subtract_min(ts_xd)
+            # ts_yd = self.subtract_min(ts_yd)
+            # ts_d = self.subtract_min(ts_d)
+            # if self.opt['time_encode']:
+            #     ts_d = self.encode_time_features(ts_d)
+            #     ts_xd = self.encode_time_features(ts_xd)
+            #     ts_yd = self.encode_time_features(ts_yd)
+            #create masked item sequence
+            target_sentence = []
+            masked_d = []
+            neg_d = []
+            for i in d[:-1]:
+                if (i!= self.opt["source_item_num"] + self.opt["target_item_num"]) and (random.random() < self.opt['mask_prob']):
+                    masked_d.append(self.mask_id)
+                    neg = random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(d),1)[0]
+                    neg_d.append(neg)
+                    target_sentence.append(i)
+                else:
+                    masked_d.append(i)
+                    neg_d.append(i)
+                    target_sentence.append(self.opt["source_item_num"] + self.opt["target_item_num"])
+            masked_d.append(self.mask_id)
+            neg_d.append(random.sample(set(range(self.opt['source_item_num']+self.opt['target_item_num'])) - set(d),1)[0])
+            target_sentence.append(d[-1])
+            if len(d) < max_len:
+                position = [0] * (max_len - len(d)) + position
+                ground = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(d)) + ground
+                ground_mask = [0] * (max_len - len(d)) + ground_mask
+                # d = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (max_len - len(d)) + d
+                # masked_d = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(masked_d)) + masked_d
+                # neg_d = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(neg_d)) + neg_d
+                ts_d = [0]*(max_len - len(ts_d)) + ts_d
+                gender = [gender]*max_len
+                # target_sentence = [self.opt["source_item_num"] + self.opt["target_item_num"]]*(max_len - len(target_sentence)) + target_sentence
+            else:
+                print("pass")
+            # ipdb.set_trace()
+            processed.append([index, d, position , ts_d, ground, ground_mask, gender])
+        return processed
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, key):
+        """ Get a batch with index. """
+        if not isinstance(key, int):
+            raise TypeError
+        if key < 0 or key >= len(self.data):
+            raise IndexError
+        batch = self.data[key]
+        batch_size = len(batch)
+        batch = list(zip(*batch))
+        if self.collate_fn:
+            batch = self.collate_fn(batch)
+            return batch
+        return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]),\
+                torch.tensor(batch[6]), torch.tensor(batch[7]), torch.tensor(batch[8]),torch.tensor(batch[9]))
+    def __iter__(self):
+        for i in range(self.__len__()):
+            yield self.__getitem__(i)
 

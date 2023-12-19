@@ -18,7 +18,7 @@ from utils.loader import *
 from utils.MoCo_utils import compute_features
 from utils.cluster import run_kmeans
 from utils.collator import CLDataCollator
-
+from model.C2DSR import Generator
 def main(args):
     def seed_everything(seed=1111):
         random.seed(seed)
@@ -61,14 +61,19 @@ def main(args):
     print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['batch_size']))
     # train_collator = CLDataCollator(opt, eval=-1)
     # valid_collator = CLDataCollator(opt, eval=2)
+
     train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None)
     valid_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 2, collate_fn  = None)
     test_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 1,collate_fn  = None)
     print("Data loading done!")
 
-    # opt["itemnum"] = opt["source_item_num"] + opt["target_item_num"] + 1
+    # load item generator
+    generator = Generator(opt)
+    checkpoint = torch.load(f"./generator_model/{opt['data_dir']}/0/20/model.pt")    
+    state_dict = checkpoint['model']
+    generator.load_state_dict(state_dict)
+    print("\033[01;32m generator loaded! \033[0m")
     
-
     filename = opt["data_dir"]
     # train_data = "./fairness_dataset/" + filename + "/train.txt"
     # G = GraphMaker(opt, train_data)
@@ -97,9 +102,9 @@ def main(args):
         #         print("Pretrained model does not exist! \n Model training from scratch...")
         if opt['evaluation_model'] is not None and opt['training_mode']=="evaluation":
             if opt["main_task"]=="X":
-                evaluation_path ="models/" + opt['data_dir']+ f"/{opt['evaluation_model']}/{str(opt['seed'])}/X_model.pt" 
+                evaluation_path ="models/" + opt['data_dir'] + f"/{opt['evaluation_model']}/{str(opt['seed'])}/X_model.pt" 
             elif opt["main_task"]=="Y":    
-                evaluation_path ="models/" + opt['data_dir']+ f"/{opt['evaluation_model']}/{str(opt['seed'])}/Y_model.pt"
+                evaluation_path ="models/" + opt['data_dir'] + f"/{opt['evaluation_model']}/{str(opt['seed'])}/Y_model.pt"
             print("evaluation_path",evaluation_path)
             if os.path.exists(evaluation_path):
                 print("\033[01;32m Loading evaluation model from {}... \033[0m\n".format(evaluation_path))
@@ -216,7 +221,8 @@ if __name__ == '__main__':
     
     parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
     parser.add_argument('--domain',type=str,default= "cross" ,help="target only or cross domain")
-    # parser.add_argument('--test_data_type',type=str,default= "mixed" ,help="evaluation epoch")
+    parser.add_argument('--topk',type=int,default= 5 ,help="topk item recommendation")
+    parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item to generate")    
     args = parser.parse_args()
     
     main(args)
