@@ -35,6 +35,7 @@ def main(args):
         torch.cuda.manual_seed(args.seed)
     args.num_cluster = [int(n) for n in args.num_cluster.split(',')]
     init_time = time.time()
+    
     # make opt
     opt = vars(args)
     print("My seed:", opt["seed"])
@@ -59,22 +60,38 @@ def main(args):
         # opt["cpu"] = True
 
     print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['batch_size']))
-    # train_collator = CLDataCollator(opt, eval=-1)
-    # valid_collator = CLDataCollator(opt, eval=2)
+    
+    # read number of items
+    def read_item(fname):
+        with codecs.open(fname, "r", encoding="utf-8") as fr:
+            item_num = [int(d.strip()) for d in fr.readlines()[:2]]
+        return item_num
+    filename = opt["data_dir"]
+    opt["source_item_num"], opt["target_item_num"] = read_item("./fairness_dataset/Movie_lens_time/" + filename + "/train.txt")
+    opt['itemnum'] = opt["source_item_num"] + opt["target_item_num"] +1
+    
+    # load item generator
+    if opt['data_augmentation'] == "item_generation":
+        generator = Generator(opt)
+        checkpoint = torch.load(f"./generator_model/{opt['data_dir']}/{opt['pretrain_model']}/{str(opt['load_pretrain_epoch'])}/model.pt")    
+        state_dict = checkpoint['model']
+        generator.load_state_dict(state_dict)
+        print("\033[01;32m Generator loaded! \033[0m")
+        
+ 
+    if opt['training_mode'] != "evaluation":
+        if opt['data_augmentation']=="item_generation":
+            train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None, generator = generator)
+        else:
+            train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None, generator = None)
 
-    train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None)
-    valid_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 2, collate_fn  = None)
+        valid_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 2, collate_fn  = None)
     test_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 1,collate_fn  = None)
     print("Data loading done!")
 
-    # load item generator
-    generator = Generator(opt)
-    checkpoint = torch.load(f"./generator_model/{opt['data_dir']}/0/20/model.pt")    
-    state_dict = checkpoint['model']
-    generator.load_state_dict(state_dict)
-    print("\033[01;32m generator loaded! \033[0m")
     
-    filename = opt["data_dir"]
+    
+    
     # train_data = "./fairness_dataset/" + filename + "/train.txt"
     # G = GraphMaker(opt, train_data)
     # adj, adj_single = G.adj, G.adj_single
@@ -111,7 +128,7 @@ def main(args):
                 trainer.load(evaluation_path)
                 print("\033[01;32m Loading evaluation model done! \033[0m\n")
             else:
-                print("Pretrained model does not exist! \n Model training from scratch...")
+                raise ValueError("evaluation model does not exist!")
         # elif opt['domain'] =="cross" and opt['pretrain_model'] is not None:  #single domain pretrain and cross finetune
         #     if opt["main_task"]=="X":
         #         pretrain_path ="models/" + opt['data_dir']+ f"/{opt['pretrain_model']}/{opt['seed']}/X_model.pt" 
@@ -132,6 +149,8 @@ def main(args):
             print("\033[01;34m Start evaluation... \033[0m\n")
             trainer.evaluate(test_batch, file_logger)
             return
+        if opt['data_augmentation']=="item_generation":
+            trainer.generator = generator
         trainer.train(opt['num_epoch'], train_batch, valid_batch, test_batch, file_logger)
     else:
         pretrainer = Pretrainer(opt, adj, adj_single)
@@ -219,10 +238,14 @@ if __name__ == '__main__':
     parser.add_argument('--mixed_included',type=bool,default= False ,help="mixed included or not")
     parser.add_argument('--main_task',type=str,default="X" ,help="[dual, X, Y]")
     
+    parser.add_argument('--data_augmentation',type=str,default= None ,help="[item_generation, nonoverlap_augmentation]")
     parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
     parser.add_argument('--domain',type=str,default= "cross" ,help="target only or cross domain")
     parser.add_argument('--topk',type=int,default= 5 ,help="topk item recommendation")
     parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item to generate")    
+    parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
+    parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment or not")
+
     args = parser.parse_args()
     
     main(args)

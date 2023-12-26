@@ -8,28 +8,28 @@ from datetime import datetime
 import numpy as np
 import ipdb
 import random
+import copy
 import time
 from pathlib import Path
 from utils import torch_utils
 from model.C2DSR import C2DSR
 from model.MoCo import MoCo
 from model.NNCL import NNCL
-from utils.MoCo_utils import compute_features
+from utils.MoCo_utils import compute_features, compute_embedding_for_target_user
 from utils.cluster import run_kmeans
 from utils.time_transformation import TimeTransformation
 from scipy.spatial import distance
 from model.C2DSR import *
-from utils.loader import DataLoader
+from utils.loader import DataLoader,NonoverlapDataLoader
+from utils.torch_utils import *
 class Similarity(nn.Module):
     """
     Dot product or cosine similarity
     """
-
     def __init__(self, temp):
         super().__init__()
         self.temp = temp
         self.cos = nn.CosineSimilarity(dim=-1)
-
     def forward(self, x, y):
         return self.cos(x, y) / self.temp
 class Trainer(object):
@@ -156,7 +156,6 @@ class Trainer(object):
             augmented_xd = inputs[26]
             augmented_yd = inputs[27]
             gender = inputs[28]
-            
         else:
             inputs = [Variable(b) for b in batch]
             index = inputs[0]
@@ -913,6 +912,102 @@ class CDSRTrainer(Trainer):
         labels = labels_mixed_Y
         loss = self.CL_criterion(logits, labels)
         return loss
+    def overlap_nonoverlap_similarity(self):
+        # get non-overlap data
+        nonoverlap_dataLoader = NonoverlapDataLoader(self.opt['data_dir'], self.opt['batch_size'],  self.opt)
+        target_gt = [data[3] for data in nonoverlap_dataLoader.all_data]
+        target_gt_mask = [data[4] for data in nonoverlap_dataLoader.all_data]
+        nonoverlap_seq_feat, nonoverlap_feat = compute_embedding_for_target_user(self.opt, nonoverlap_dataLoader, self.model, name = 'non-overlap')
+        
+        # get overlap data
+        overlap_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, -1)
+        overlap_seq_feat, _ = compute_embedding_for_target_user(self.opt, overlap_dataloader, self.model, name = 'overlap')
+        
+        # get topk similar user for nonoverlap female data
+        sim = nonoverlap_seq_feat@overlap_seq_feat.T
+        top_k_values, top_k_indice = torch.topk(sim, 20, dim=1)
+        try:
+            lookup_dict = {item[0]: item[1:] for item in overlap_dataloader.all_data}
+            top_k_data = [[lookup_dict[idx] for idx in sorted(random.sample(indices, 10))] for indices in top_k_indice.tolist()] #從20個中隨機選10個
+        except:
+            ipdb.set_trace()
+        # num_aug_batch = int(self.opt['batch_size']*0.1)
+        # target_num = int(num_aug_batch*num_batch/len(top_k_data))
+        
+        #select [required_num] augmented user to be added in each batch 
+        required_num = self.opt['augment_size'] #number of aumented user to be added in each batch
+        if len(top_k_data)<required_num:
+            required_num = len(top_k_data)
+        selected_idx = random.sample(list(range(len(top_k_data))), required_num)
+        selected_top_k_data = [top_k_data[idx] for idx in selected_idx]
+        
+        augmented_seq_fea = []
+        augmented_share_y_ground = []
+        augmented_share_y_ground_mask = []
+        for query, topk in zip(nonoverlap_seq_feat, selected_top_k_data):
+            mixed_seq = [seq[0] for seq in topk] # 1,4,12
+            target_seq = [seq[2] for seq in topk]
+            position = [seq[3] for seq in topk] 
+            share_y_grounds = [seq[11] for seq in topk] 
+            share_y_ground_masks = [seq[16] for seq in topk] 
+            value = torch.tensor(mixed_seq)
+            key = torch.tensor(target_seq)
+            query = query.unsqueeze(0)
+            
+            if self.opt['cuda']:
+                query, key, value = query.cuda(), key.cuda(), value.cuda()
+            key, _ = get_sequence_embedding(self.opt,key,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = False) #[10, 128] (sequence_embedding, item embedding)
+            _, value = get_sequence_embedding(self.opt,value,self.model.encoder,self.model.item_emb, encoder_causality_mask = True) #[10, 50, 128]
+            weight = torch.softmax(torch.matmul(query, key.T)/math.sqrt(query.size(-1)), dim=-1) #[1, 10]
+            aug_mixed_seq = torch.einsum('ij,jkl->ikl', weight, value).squeeze()#[1, 50, 128]
+            max_position_id = max([max(s) for s in position])
+            aug_position = [0]*(50-max_position_id) + list(range(0,max_position_id+1))[1:]
+            def determine_value(tup):
+                np_array = np.array(tup)
+                filtered_array = np_array[np_array != self.opt['target_item_num']]
+                if filtered_array.size > 0:
+                    return np.random.choice(filtered_array)
+                else:
+                    return self.opt['target_item_num']
+            def determine_value_mask(tup):
+                if all([x==0 for x in tup]):
+                    return 0
+                return 1
+            aug_share_y_ground_mask = []
+            for e in zip(*share_y_ground_masks):
+                aug_share_y_ground_mask.append(determine_value_mask(e))
+
+            aug_share_y_ground = []                
+            for _, e in enumerate(zip(*share_y_grounds)) :
+                aug_share_y_ground.append(determine_value(e))                
+            augmented_share_y_ground.append(aug_share_y_ground)
+            augmented_share_y_ground_mask.append(copy.deepcopy(aug_share_y_ground_mask))
+            augmented_seq_fea.append(aug_mixed_seq.clone())
+        # nonoverlap_feat = nonoverlap_feat.repeat_interleave(target_num,dim=0)
+        # target_gt = torch.tensor(target_gt).repeat_interleave(target_num,dim=0)
+        # target_gt_mask = torch.tensor(target_gt_mask).repeat_interleave(target_num,dim=0)
+        
+        def add_noise(representation): # do perturbation
+            noise = torch.randn_like(representation)
+            scaled_noise = torch.nn.functional.normalize(noise,dim=2)
+            return representation + scaled_noise
+        
+        nonoverlap_feat = nonoverlap_feat[selected_idx]
+        nonoverlap_feat = add_noise(nonoverlap_feat)
+        target_gt = torch.tensor(target_gt)[selected_idx]
+        target_gt_mask = torch.tensor(target_gt_mask)[selected_idx]
+        augmented_seq_fea = add_noise(torch.stack(augmented_seq_fea))        
+        augmented_share_y_ground = torch.tensor(augmented_share_y_ground)
+        augmented_share_y_ground_mask = torch.tensor(augmented_share_y_ground_mask)
+        if self.opt['cuda']:
+            augmented_seq_fea = augmented_seq_fea.cuda()
+            augmented_share_y_ground = augmented_share_y_ground.cuda()
+            augmented_share_y_ground_mask = augmented_share_y_ground_mask.cuda()
+            nonoverlap_feat = nonoverlap_feat.cuda()
+            target_gt = target_gt.cuda()
+            target_gt_mask = target_gt_mask.cuda()
+        
+        return augmented_seq_fea, augmented_share_y_ground, augmented_share_y_ground_mask, nonoverlap_feat, target_gt - self.opt['source_item_num'], target_gt_mask
     def train_batch(self, epoch, batch, i, cluster_result):
         self.model.train()
         self.optimizer.zero_grad()
@@ -951,6 +1046,12 @@ class CDSRTrainer(Trainer):
                 NNCL_loss = self.NNCL(x_seq, y_seq)
                 
         if self.opt['time_encode']:
+            if self.opt['domain'] =="single":
+                seq = None 
+                if self.opt['main_task'] == "X":
+                    y_seq = None
+                elif self.opt['main_task'] == "Y":
+                    x_seq = None  
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
         else:
             if self.opt['domain'] =="single":
@@ -973,7 +1074,20 @@ class CDSRTrainer(Trainer):
         x_ground_mask = x_ground_mask[:, -used:]
         y_ground = y_ground[:, -used:]
         y_ground_mask = y_ground_mask[:, -used:]
-
+        
+        aug_data = None
+        if epoch > 10 and self.opt['data_augmentation']=="nonoverlap_augmentation":
+            aug_data = self.overlap_nonoverlap_similarity()
+            
+        if aug_data is not None:
+            augmented_seqs_fea, augmented_share_y_ground, augmented_share_y_ground_mask, target_feat, target_gt, target_gt_mask = aug_data
+            print(f"\033[34mAdd non-ovelap augmented data to batch {i}\033[0m")
+            seqs_fea = torch.cat([seqs_fea,augmented_seqs_fea])
+            share_y_ground = torch.cat([share_y_ground,augmented_share_y_ground[:, -used:]],dim=0)
+            share_y_ground_mask = torch.cat([share_y_ground_mask,augmented_share_y_ground_mask[:, -used:]],dim=0)
+            y_seqs_fea = torch.cat([y_seqs_fea, target_feat])
+            y_ground = torch.cat([y_ground, target_gt[:, -used:]],dim=0)
+            y_ground_mask = torch.cat([y_ground_mask, target_gt_mask[:, -used:]],dim=0)
         if self.opt['main_task'] == "dual":
             share_x_result =  self.model.lin_X(seqs_fea[:,-used:]) # b * seq * X_num
             share_y_result = self.model.lin_Y(seqs_fea[:, -used:])  # b * seq * Y_num
@@ -990,8 +1104,6 @@ class CDSRTrainer(Trainer):
             # specific_y_result = self.model.lin_Y(y_seqs_fea[:, -used:])
             specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])  # b * seq * 1
             specific_y_result = torch.cat((specific_y_result, specific_y_pad_result), dim=-1)
-
-            
 
             x_share_loss = self.CS_criterion(
                 share_trans_x_result.reshape(-1, self.opt["source_item_num"] + 1),
@@ -1092,8 +1204,7 @@ class CDSRTrainer(Trainer):
             loss.backward()
             self.optimizer.step()
         elif self.opt['main_task'] == "Y":
-            
-            if seqs_fea is not None:
+            if seqs_fea is not None:                                  
                 share_y_result =  self.model.lin_Y(seqs_fea[:,-used:]) # b * seq * X_num
                 share_pad_result = self.model.lin_PAD(seqs_fea[:, -used:])  # b * seq * 1 #最後一維，即padding，score要是零
                 share_trans_y_result = torch.cat((share_y_result, share_pad_result), dim=-1)
@@ -1109,7 +1220,7 @@ class CDSRTrainer(Trainer):
                 specific_y_result = self.model.lin_Y(y_seqs_fea[:, -used:])
                 specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])
                 specific_y_result = torch.cat((specific_y_result, specific_y_pad_result), dim=-1)
-
+            # ipdb.set_trace()
             # weight = []    
             # for g in gender:
             #     g = g[0]
@@ -1122,10 +1233,8 @@ class CDSRTrainer(Trainer):
             y_loss = self.CS_criterion(
                 specific_y_result.reshape(-1, self.opt["target_item_num"] + 1),
                 y_ground.reshape(-1))  # b * seq
-            # ipdb.set_trace()
             # weighted_y_loss = y_loss*weight
             y_loss = (y_loss * (y_ground_mask.reshape(-1))).mean()
-            
             if self.opt['training_mode'] =="joint_learn":
                 if self.opt["ssl"]=="time_CL":
                     loss = y_share_loss + y_loss  + time_CL_loss
@@ -1208,10 +1317,19 @@ class CDSRTrainer(Trainer):
                         features_cross[torch.norm(features_cross,dim=1)>1.5] /= 2 
                         features_cross = features_cross.numpy()
                         cluster_result_cross = run_kmeans(features_cross, self.opt)
-            train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None)
+                        
+            # item-generation augmentation
+            if self.opt['data_augmentation']=="item_generation":
+                train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator)
+            
+            # non-overlap data augmentation
+            # if epoch > 10:
+            #     aug_data = self.overlap_nonoverlap_similarity()
+                # target_num = int(len(aug_data[0])/num_batch)
+                # shuffled_indices = torch.randperm(len(aug_data[0]))
             for i,batch in enumerate(train_dataloader):
                 global_step += 1
-                loss = self.train_batch(epoch,batch, i, cluster_result = (cluster_result_X, cluster_result_Y, cluster_result_cross))
+                loss = self.train_batch(epoch, batch, i, cluster_result = (cluster_result_X, cluster_result_Y, cluster_result_cross))
                 train_loss += loss
                 
             duration = time.time() - epoch_start_time

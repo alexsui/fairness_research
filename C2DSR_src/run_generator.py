@@ -7,8 +7,6 @@ import glob
 import ipdb
 parser = argparse.ArgumentParser()
 # dataset part
-parser = argparse.ArgumentParser()
-# dataset part
 parser.add_argument('--data_dir', type=str, default='action_animation', help='Movie-Book, Entertainment-Education')
 
 # model part
@@ -72,7 +70,7 @@ parser.add_argument('--num_proto_neg',type=int,default= 1280 ,help="intra domain
 #pretrain
 parser.add_argument('--training_mode',default= "finetune", type = str, help=["pretrain","joint_pretrain","finetune","joint_learn"])
 parser.add_argument('--pretrain_model',type=str,default= None ,help="pretrain or not")
-parser.add_argument('--pretrain_epoch',type=int,default= 60 ,help="pretrain epoch")
+parser.add_argument('--pretrain_epoch',type=int,default= 30 ,help="pretrain epoch")
 parser.add_argument('--load_pretrain_epoch',type=int,default= None ,help="pretrain epoch")
 
 #time encoding
@@ -97,14 +95,7 @@ parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item t
 
 args, unknown = parser.parse_known_args()
 
-modes = [
-    # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
-    # "fairness_baseline_Y_triple_pull"
-    # "fairness_baseline_X_eval","fairness_baseline_X_single_domain_eval",
-    
-]
-
-folder_list = glob.glob("./fairness_dataset/Movie_lens_new/*")
+folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
 print(data_dir)
@@ -112,7 +103,6 @@ generate_types = ["X","Y","mixed"]
 # generate_nums = [3, 5, 7, 10]
 warmup_epoch = 1000 # prevent from doing clustering 
 print("Config of Experiment:")
-print(f"Modes: {modes}")
 num_seeds = 1
 for data_idx in range(len(data_dir)):
     data_name = data_dir[data_idx]

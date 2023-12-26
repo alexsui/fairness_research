@@ -188,3 +188,21 @@ def get_embedding_for_ssl(opt , data, encoder, item_embed, projector =None,
         out = projector(out)
     out = torch.nn.functional.normalize(out, dim=1)
     return out
+def get_sequence_embedding(opt, data, encoder, item_embed, projector =None, 
+                          encoder_causality_mask = False, ts=None):
+    batch_size = data.shape[0]
+    non_zero_mask = (data != (opt["source_item_num"] + opt["target_item_num"])).long()
+    position_id = non_zero_mask.cumsum(dim=1) * non_zero_mask
+    seqs = item_embed(data)
+    feat = encoder(data, seqs, position_id, ts=ts, causality_mask = encoder_causality_mask)
+    # if pooling:
+    if opt["pooling"] == "bert":
+        seq_feat = feat[:,0,:]
+    elif opt["pooling"] == "ave":
+        if opt['augment_type']=="dropout":
+            seq_feat = torch.sum(feat, dim=1)/torch.sum(non_zero_mask, dim=1).unsqueeze(-1)
+        else:
+            seq_feat = torch.sum(feat, dim=1)/torch.sum(non_zero_mask, dim=1).unsqueeze(-1)
+    feat = torch.nn.functional.normalize(feat, dim=1)
+    seq_feat = torch.nn.functional.normalize(seq_feat, dim=1)
+    return seq_feat, feat
