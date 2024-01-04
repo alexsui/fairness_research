@@ -98,9 +98,10 @@ args, unknown = parser.parse_known_args()
 folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
+# data_dir = ['adventure_thriller']
 print(data_dir)
 generate_types = ["X","Y","mixed"]
-# generate_nums = [3, 5, 7, 10]
+time_encode = False
 warmup_epoch = 1000 # prevent from doing clustering 
 print("Config of Experiment:")
 num_seeds = 1
@@ -110,6 +111,7 @@ for data_idx in range(len(data_dir)):
         args.data_dir = data_name
         args.generate_type = generate_type
         args.id = f"{generate_type}"
+        args.time_encode = time_encode
         args.warmup_epoch = warmup_epoch
         args.num_cluster = "2,3,4"
         main(args)

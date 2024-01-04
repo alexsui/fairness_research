@@ -10,6 +10,7 @@ import ipdb
 import random
 import copy
 import time
+import json
 from pathlib import Path
 from utils import torch_utils
 from model.C2DSR import C2DSR
@@ -217,14 +218,17 @@ class Trainer(object):
 class GTrainer(Trainer):
     def __init__(self, opt):
         self.opt = opt
-        self.model = Generator(opt)
+        self.model = Generator(opt,type = self.opt["generate_type"])
         self.CE_criterion = nn.CrossEntropyLoss(ignore_index =self.opt["source_item_num"] + self.opt["target_item_num"] )
         self.optimizer = torch_utils.get_optimizer(opt['optim'], self.model.parameters(), opt['lr'])
         if opt['cuda']:
             self.model.cuda()
     def train_batch(self, batch):
         index,seq, position, ts_d, ground, ground_mask ,masked_d, neg_d, target_sentence, gender = self.unpack_batch_for_gen(batch)
-        mip_pred = self.model(masked_d, position)
+        if self.opt['time_encode']:
+            mip_pred = self.model(masked_d, position, ts_d)
+        else:
+            mip_pred = self.model(masked_d, position)
         batch_size, seq_len, item_num = mip_pred.shape
         mlm_predictions = mip_pred.argmax(dim=2)
         flatten_mip_pred = mip_pred.view(-1,item_num)
@@ -233,8 +237,6 @@ class GTrainer(Trainer):
             mask = flatten_target_sentence != self.opt["source_item_num"] + self.opt["target_item_num"]
             flatten_target_sentence[mask] = flatten_target_sentence[mask] - self.opt["source_item_num"]
         mip_loss = self.CE_criterion(flatten_mip_pred, flatten_target_sentence)
-        # print(self.opt["source_item_num"])
-        # ipdb.set_trace()
         self.optimizer.zero_grad()
         mip_loss.backward()
         self.optimizer.step()
@@ -724,6 +726,8 @@ class CDSRTrainer(Trainer):
             masked_yd= inputs[17]
             neg_yd= inputs[18]
             gender = inputs[19]
+            x_last_3 = inputs[20]
+            y_last_3 = inputs[21]
         else:
             inputs = [Variable(b) for b in batch]
             seq = inputs[0]
@@ -746,7 +750,9 @@ class CDSRTrainer(Trainer):
             masked_yd= inputs[17]
             neg_yd= inputs[18]
             gender = inputs[19]
-        return index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd,gender
+            x_last_3 = inputs[20]
+            y_last_3 = inputs[21]
+        return index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd,gender, x_last_3,y_last_3
 
     
     def HingeLoss(self, pos, neg):
@@ -912,30 +918,28 @@ class CDSRTrainer(Trainer):
         labels = labels_mixed_Y
         loss = self.CL_criterion(logits, labels)
         return loss
-    def overlap_nonoverlap_similarity(self):
+    def nonoverlap_user_generation(self):
+        
         # get non-overlap data
         nonoverlap_dataLoader = NonoverlapDataLoader(self.opt['data_dir'], self.opt['batch_size'],  self.opt)
-        target_gt = [data[3] for data in nonoverlap_dataLoader.all_data]
-        target_gt_mask = [data[4] for data in nonoverlap_dataLoader.all_data]
         nonoverlap_seq_feat, nonoverlap_feat = compute_embedding_for_target_user(self.opt, nonoverlap_dataLoader, self.model, name = 'non-overlap')
-        
+        target_gt = [data[3] for data in nonoverlap_dataLoader.all_data]
+        target_gt_mask = [data[4] for data in nonoverlap_dataLoader.all_data]        
         # get overlap data
-        overlap_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, -1)
-        overlap_seq_feat, _ = compute_embedding_for_target_user(self.opt, overlap_dataloader, self.model, name = 'overlap')
-        
+        overlap_dataLoader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, -1)
+        overlap_seq_feat, _ = compute_embedding_for_target_user(self.opt, overlap_dataLoader, self.model, name = 'overlap')
         # get topk similar user for nonoverlap female data
         sim = nonoverlap_seq_feat@overlap_seq_feat.T
         top_k_values, top_k_indice = torch.topk(sim, 20, dim=1)
         try:
-            lookup_dict = {item[0]: item[1:] for item in overlap_dataloader.all_data}
-            top_k_data = [[lookup_dict[idx] for idx in sorted(random.sample(indices, 10))] for indices in top_k_indice.tolist()] #從20個中隨機選10個
+            lookup_dict = {item[0]: item[1:] for item in overlap_dataLoader.all_data}
+            lookup_keys = set(lookup_dict.keys())
+            top_k_data = [[lookup_dict[idx] for idx in sorted(random.sample(indices, 10))] for indices in top_k_indice.tolist() if all([x in lookup_keys for x in indices])] #從20個中隨機選10個
         except:
             ipdb.set_trace()
-        # num_aug_batch = int(self.opt['batch_size']*0.1)
-        # target_num = int(num_aug_batch*num_batch/len(top_k_data))
         
         #select [required_num] augmented user to be added in each batch 
-        required_num = self.opt['augment_size'] #number of aumented user to be added in each batch
+        required_num = 1000 #number of aumented user to be added in each batch
         if len(top_k_data)<required_num:
             required_num = len(top_k_data)
         selected_idx = random.sample(list(range(len(top_k_data))), required_num)
@@ -949,37 +953,27 @@ class CDSRTrainer(Trainer):
             target_seq = [seq[2] for seq in topk]
             position = [seq[3] for seq in topk] 
             share_y_grounds = [seq[11] for seq in topk] 
-            share_y_ground_masks = [seq[16] for seq in topk] 
+            # share_y_ground_masks = [seq[16] for seq in topk] 
             value = torch.tensor(mixed_seq)
             key = torch.tensor(target_seq)
             query = query.unsqueeze(0)
             
             if self.opt['cuda']:
                 query, key, value = query.cuda(), key.cuda(), value.cuda()
-            key, _ = get_sequence_embedding(self.opt,key,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = False) #[10, 128] (sequence_embedding, item embedding)
-            _, value = get_sequence_embedding(self.opt,value,self.model.encoder,self.model.item_emb, encoder_causality_mask = True) #[10, 50, 128]
+            ts_key = [seq[9] for seq in topk] if self.opt['time_encode'] else None
+            ts_value = [seq[7] for seq in topk] if self.opt['time_encode'] else None
+
+            key, _ = get_sequence_embedding(self.opt,key,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = False, ts = ts_key) #[10, 128] (sequence_embedding, item embedding)
+            _, value = get_sequence_embedding(self.opt,value,self.model.encoder,self.model.item_emb, encoder_causality_mask = True, ts = ts_value) #[10, 50, 128]
             weight = torch.softmax(torch.matmul(query, key.T)/math.sqrt(query.size(-1)), dim=-1) #[1, 10]
             aug_mixed_seq = torch.einsum('ij,jkl->ikl', weight, value).squeeze()#[1, 50, 128]
             max_position_id = max([max(s) for s in position])
             aug_position = [0]*(50-max_position_id) + list(range(0,max_position_id+1))[1:]
-            def determine_value(tup):
-                np_array = np.array(tup)
-                filtered_array = np_array[np_array != self.opt['target_item_num']]
-                if filtered_array.size > 0:
-                    return np.random.choice(filtered_array)
-                else:
-                    return self.opt['target_item_num']
-            def determine_value_mask(tup):
-                if all([x==0 for x in tup]):
-                    return 0
-                return 1
-            aug_share_y_ground_mask = []
-            for e in zip(*share_y_ground_masks):
-                aug_share_y_ground_mask.append(determine_value_mask(e))
-
-            aug_share_y_ground = []                
-            for _, e in enumerate(zip(*share_y_grounds)) :
-                aug_share_y_ground.append(determine_value(e))                
+            
+            share_y_grounds = torch.tensor(share_y_grounds)
+            indices = torch.randint(share_y_grounds.size(0), (share_y_grounds.size(-1),)) 
+            aug_share_y_ground = share_y_grounds[indices, torch.arange(share_y_grounds.size(-1))]    
+            aug_share_y_ground_mask =  (aug_share_y_ground != self.opt['target_item_num']).to(torch.int)                          
             augmented_share_y_ground.append(aug_share_y_ground)
             augmented_share_y_ground_mask.append(copy.deepcopy(aug_share_y_ground_mask))
             augmented_seq_fea.append(aug_mixed_seq.clone())
@@ -997,8 +991,8 @@ class CDSRTrainer(Trainer):
         target_gt = torch.tensor(target_gt)[selected_idx]
         target_gt_mask = torch.tensor(target_gt_mask)[selected_idx]
         augmented_seq_fea = add_noise(torch.stack(augmented_seq_fea))        
-        augmented_share_y_ground = torch.tensor(augmented_share_y_ground)
-        augmented_share_y_ground_mask = torch.tensor(augmented_share_y_ground_mask)
+        augmented_share_y_ground = torch.stack(augmented_share_y_ground)
+        augmented_share_y_ground_mask = torch.stack(augmented_share_y_ground_mask)
         if self.opt['cuda']:
             augmented_seq_fea = augmented_seq_fea.cuda()
             augmented_share_y_ground = augmented_share_y_ground.cuda()
@@ -1044,22 +1038,16 @@ class CDSRTrainer(Trainer):
                 pull_loss = self.pull_xy_embedding(seq, x_seq, y_seq)
             if self.opt['ssl'] == "NNCL":
                 NNCL_loss = self.NNCL(x_seq, y_seq)
+        if self.opt['domain'] =="single":
+            seq = None 
+            if self.opt['main_task'] == "X":
+                y_seq = None
+            elif self.opt['main_task'] == "Y":
+                x_seq = None  
                 
         if self.opt['time_encode']:
-            if self.opt['domain'] =="single":
-                seq = None 
-                if self.opt['main_task'] == "X":
-                    y_seq = None
-                elif self.opt['main_task'] == "Y":
-                    x_seq = None  
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
-        else:
-            if self.opt['domain'] =="single":
-                seq = None 
-                if self.opt['main_task'] == "X":
-                    y_seq = None
-                elif self.opt['main_task'] == "Y":
-                    x_seq = None   
+        else: 
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
 
         #取倒數10個
@@ -1076,12 +1064,12 @@ class CDSRTrainer(Trainer):
         y_ground_mask = y_ground_mask[:, -used:]
         
         aug_data = None
-        if epoch > 10 and self.opt['data_augmentation']=="nonoverlap_augmentation":
-            aug_data = self.overlap_nonoverlap_similarity()
-            
+        if epoch > 10 and i==0 and self.opt['data_augmentation']=="user_generation":
+            aug_data = self.nonoverlap_user_generation()
+            # aug_data = None
         if aug_data is not None:
             augmented_seqs_fea, augmented_share_y_ground, augmented_share_y_ground_mask, target_feat, target_gt, target_gt_mask = aug_data
-            print(f"\033[34mAdd non-ovelap augmented data to batch {i}\033[0m")
+            print(f"\033[34m{len(augmented_seqs_fea)} Non-overlap user generation\033[0m")
             seqs_fea = torch.cat([seqs_fea,augmented_seqs_fea])
             share_y_ground = torch.cat([share_y_ground,augmented_share_y_ground[:, -used:]],dim=0)
             share_y_ground_mask = torch.cat([share_y_ground_mask,augmented_share_y_ground_mask[:, -used:]],dim=0)
@@ -1286,6 +1274,9 @@ class CDSRTrainer(Trainer):
         val_pred_loss_X = []
         val_pred_loss_Y = []
         # start training
+        # for non-overlap data augmentation
+        # nonoverlap_dataLoader = NonoverlapDataLoader(self.opt['data_dir'], self.opt['batch_size'],  self.opt)
+        # overlap_dataLoader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, -1)
         for epoch in range(1, self.opt['num_epoch'] + 1):
             train_loss = 0
             epoch_start_time = time.time()
@@ -1319,14 +1310,10 @@ class CDSRTrainer(Trainer):
                         cluster_result_cross = run_kmeans(features_cross, self.opt)
                         
             # item-generation augmentation
-            if self.opt['data_augmentation']=="item_generation":
+            if self.opt['data_augmentation']=="item_augmentation":
                 train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator)
-            
-            # non-overlap data augmentation
-            # if epoch > 10:
-            #     aug_data = self.overlap_nonoverlap_similarity()
-                # target_num = int(len(aug_data[0])/num_batch)
-                # shuffled_indices = torch.randperm(len(aug_data[0]))
+            if self.opt['data_augmentation']=="user_generation" and epoch > 10:
+                train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = None, model = self.model)
             for i,batch in enumerate(train_dataloader):
                 global_step += 1
                 loss = self.train_batch(epoch, batch, i, cluster_result = (cluster_result_X, cluster_result_Y, cluster_result_cross))
@@ -1486,6 +1473,8 @@ class CDSRTrainer(Trainer):
             val_loss_Y += batch_loss_Y
         return X_pred, Y_pred, val_loss_X / len(evaluation_batch), val_loss_Y / len(evaluation_batch)    
     def get_predict_item_for_test(self, evaluation_batch):
+        with open(f"./fairness_dataset/Movie_lens_time/{self.opt['data_dir']}/item_IF.json","r") as f:
+            item_if = json.load(f)
         X_pred_female = []
         X_pred_male = []
         Y_pred_female = []
@@ -1493,7 +1482,7 @@ class CDSRTrainer(Trainer):
         
         for i, batch in enumerate(evaluation_batch):
             
-            index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd,gender = self.unpack_batch_predict(batch)
+            index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd,gender,x_last_3,y_last_3 = self.unpack_batch_predict(batch)
             if self.opt['domain'] =="single":
                 seq = None
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
@@ -1516,6 +1505,14 @@ class CDSRTrainer(Trainer):
                     else:
                         X_score = self.model.lin_X(specific_fea).squeeze(0)
                     topk_item = torch.topk(X_score, self.opt['topk'])[1].detach().cpu().numpy()
+                    try:
+                        predicted_IF = [item_if[str(d)] for d in topk_item if str(d) in list(item_if.keys())]
+                        gt_item_id = [x_seq[id][i].item() for i in x_last_3[id]]
+                        gt_IF = [item_if[str(d)] for d in gt_item_id if str(d) in list(item_if.keys())]
+                        DIF = np.sum(predicted_IF) - np.sum(gt_IF)
+                    except:
+                        print("Something wrong with IF!")
+                        ipdb.set_trace()
                     if sex[0]==0:
                         X_pred_female+=topk_item.tolist()
                     elif sex[0]==1:
@@ -1529,62 +1526,73 @@ class CDSRTrainer(Trainer):
                     else:
                         Y_score = self.model.lin_Y(specific_fea).squeeze(0)
                     topk_item = torch.topk(Y_score, self.opt['topk'])[1].detach().cpu().numpy()
+                    try:
+                        predicted_IF = [item_if[str(d)] for d in topk_item + self.opt['source_item_num'] if str(d) in list(item_if.keys())]
+                        gt_item_id = [y_seq[id][i].item() for i in y_last_3[id]]
+                        gt_IF = [item_if[str(d)] for d in gt_item_id if str(d) in list(item_if.keys())]
+                        DIF = np.sum(predicted_IF) - np.sum(gt_IF)
+                    except:
+                        print("Something wrong with IF!")
+                        ipdb.set_trace()
                     if sex[0]==0:
                         Y_pred_female+=topk_item.tolist()
                     elif sex[0]==1:
                         Y_pred_male+=topk_item.tolist()
         
-        X_pred_female = torch.tensor(X_pred_female)
-        X_pred_male = torch.tensor(X_pred_male)
-        Y_pred_female = torch.tensor(Y_pred_female)
-        Y_pred_male = torch.tensor(Y_pred_male)
+        # X_pred_female = torch.tensor(X_pred_female)
+        # X_pred_male = torch.tensor(X_pred_male)
+        # Y_pred_female = torch.tensor(Y_pred_female)
+        # Y_pred_male = torch.tensor(Y_pred_male)
         
-        X_pred_female_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
-        num, count = X_pred_female.unique(return_counts=True)
-        X_pred_female_dist[num] = count
-        X_pred_female_dist = X_pred_female_dist.to(torch.float32)
-        # max_count = X_pred_female_dist.max()
-        # if max_count > 0:
-        #     X_pred_female_dist /= max_count
+        # X_pred_female_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
+        # num, count = X_pred_female.unique(return_counts=True)
+        # X_pred_female_dist[num] = count
+        # X_pred_female_dist = X_pred_female_dist.to(torch.float32)
+        # # max_count = X_pred_female_dist.max()
+        # # if max_count > 0:
+        # #     X_pred_female_dist /= max_count
         
-        X_pred_male_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
-        num, count = X_pred_male.unique(return_counts=True)
-        X_pred_male_dist[num] = count
-        X_pred_male_dist = X_pred_male_dist.to(torch.float32)
-        # max_count = X_pred_male_dist.max()
-        # if max_count > 0:
-        #     X_pred_male_dist /= max_count
+        # X_pred_male_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
+        # num, count = X_pred_male.unique(return_counts=True)
+        # X_pred_male_dist[num] = count
+        # X_pred_male_dist = X_pred_male_dist.to(torch.float32)
+        # # max_count = X_pred_male_dist.max()
+        # # if max_count > 0:
+        # #     X_pred_male_dist /= max_count
         
-        Y_pred_female_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
-        tmp_num, tmp_count = Y_pred_female.unique(return_counts=True)
-        Y_pred_female_dist[tmp_num] = tmp_count
+        # Y_pred_female_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
+        # tmp_num, tmp_count = Y_pred_female.unique(return_counts=True)
+        # Y_pred_female_dist[tmp_num] = tmp_count
 
-        Y_pred_female_dist = Y_pred_female_dist.to(torch.float32)
-        # max_count = Y_pred_female_dist.max()
-        # if max_count > 0:
-        #     Y_pred_female_dist /= max_count
+        # Y_pred_female_dist = Y_pred_female_dist.to(torch.float32)
+        # # max_count = Y_pred_female_dist.max()
+        # # if max_count > 0:
+        # #     Y_pred_female_dist /= max_count
        
         
-        Y_pred_male_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
-        num, count = Y_pred_male.unique(return_counts=True)
-        Y_pred_male_dist[num] = count
-        Y_pred_male_dist = Y_pred_male_dist.to(torch.float32)
-        # max_count = Y_pred_male_dist.max()
-        # if max_count > 0:
-        #     Y_pred_male_dist /= max_count
+        # Y_pred_male_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
+        # num, count = Y_pred_male.unique(return_counts=True)
+        # Y_pred_male_dist[num] = count
+        # Y_pred_male_dist = Y_pred_male_dist.to(torch.float32)
+        # # max_count = Y_pred_male_dist.max()
+        # # if max_count > 0:
+        # #     Y_pred_male_dist /= max_count
         
-        return distance.jensenshannon(X_pred_female_dist+1e-12,X_pred_male_dist+1e-12).item() ,distance.jensenshannon(Y_pred_female_dist+1e-12,Y_pred_male_dist+1e-12).item()
+        # return distance.jensenshannon(X_pred_female_dist+1e-12,X_pred_male_dist+1e-12).item() ,distance.jensenshannon(Y_pred_female_dist+1e-12,Y_pred_male_dist+1e-12).item()
+        return DIF
     def test_batch(self, batch, mode):
         if mode == "valid":
             index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd, gender = self.unpack_batch_valid(batch)
         elif mode == "test":
-            index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd,gender = self.unpack_batch_predict(batch)
+            index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd,gender,x_last_3,y_last_3 = self.unpack_batch_predict(batch)
+        
+        if self.opt['domain'] =="single":
+            seq = None
         if self.opt['time_encode']:
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
         else:
-            if self.opt['domain'] =="single":
-                seq = None
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
+            
         X_pred = []
         X_pred_female = []
         X_pred_male = []
@@ -1600,7 +1608,7 @@ class CDSRTrainer(Trainer):
             elif self.opt['main_task'] == "Y":
                 tmp = y_seq
         else:
-            tmp =seq
+            tmp = seq
         for id, (fea, sex) in enumerate(zip(tmp,gender)): # b * s * f
             if XorY[id] == 0: #if x domain
                 # print("share_fea:", share_fea.shape)#[256]
@@ -1652,7 +1660,7 @@ class CDSRTrainer(Trainer):
             test_X_MRR_female, test_X_NDCG_5_female, test_X_NDCG_10_female, test_X_HR_1_female, test_X_HR_5_female, test_X_HR_10_female = self.cal_test_score(test_X_pred_female)
             test_Y_MRR_male, test_Y_NDCG_5_male, test_Y_NDCG_10_male, test_Y_HR_1_male, test_Y_HR_5_male, test_Y_HR_10_male = self.cal_test_score(test_Y_pred_male)
             test_Y_MRR_female, test_Y_NDCG_5_female, test_Y_NDCG_10_female, test_Y_HR_1_female, test_Y_HR_5_female, test_Y_HR_10_female = self.cal_test_score(test_Y_pred_female)
-            js_X, js_Y = self.get_predict_item_for_test(test_dataloader)
+            DIF = self.get_predict_item_for_test(test_dataloader)
             # result_str = 'Epoch {}: \n'.format(epoch) 
             result_str =""
             print("")
@@ -1660,8 +1668,9 @@ class CDSRTrainer(Trainer):
             best_X_test = [test_X_MRR, test_X_NDCG_10, test_X_HR_10]
             best_X_test_male = [test_X_MRR_male, test_X_NDCG_10_male, test_X_HR_10_male]
             best_X_test_female = [test_X_MRR_female, test_X_NDCG_10_female, test_X_HR_10_female]
-            result_str+=str({"JS_divergence_X":js_X})+"\n"
-            result_str+=str({"JS_divergence_Y":js_Y})+"\n"
+            result_str += str({"DIF":DIF}) + "\n" 
+            # result_str+=str({"JS_divergence_X":js_X})+"\n"
+            # result_str+=str({"JS_divergence_Y":js_Y})+"\n"
             result_str += str({"Best X domain":[test_X_MRR, test_X_NDCG_10, test_X_HR_10]})+"\n"
             result_str += str({"Best X domain male":best_X_test_male})+"\n"
             result_str += str({"Best X domain female":best_X_test_female})+"\n"

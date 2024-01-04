@@ -13,6 +13,7 @@ import ipdb
 from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
 from utils.augmentation import *
+from utils.MoCo_utils import compute_embedding_for_female_mixed_user
 import pandas as pd 
 from model.C2DSR import Generator
 
@@ -20,14 +21,17 @@ class DataLoader(DataLoader):
     """
     Load data from json files, preprocess and prepare batches.
     """
-    def __init__(self, filename, batch_size, opt, evaluation, collate_fn=None, generator=None):
+    def __init__(self, filename, batch_size, opt, evaluation, collate_fn = None, generator = None, model = None):
         self.batch_size = batch_size
         self.opt = opt
         self.eval = evaluation
         self.filename  = filename
         self.collate_fn = collate_fn
-        self.generator = generator
-       
+        self.model = model 
+        if generator is not None:
+            self.source_generator = generator[0]
+            self.target_generator = generator[1]
+            self.mixed_generator = generator[2]
         
         self.opt["maxlen"] = 50
         # ************* item_id *****************
@@ -46,7 +50,9 @@ class DataLoader(DataLoader):
 
         if evaluation < 0:
             self.train_data = self.read_train_data(source_train_data)
-            if self.generator is not None:
+            if self.opt['data_augmentation']=="user_generation" and self.model is not None:
+                self.overlap_user_generation()
+            if self.opt['data_augmentation']=="item_augmentation" and generator is not None:
                 self.item_generate()
             data = self.preprocess()
             self.num_examples = len(data)
@@ -79,46 +85,198 @@ class DataLoader(DataLoader):
         # chunk into batches
         data = [data[i:i+batch_size] for i in range(0, len(data), batch_size)]
         self.data = data
+    def overlap_user_generation(self):
+        print("*"*50)
+        print("\033[33mOverlap user generation\033[0m")
+        female_seq = [d for d in self.train_data if d[0]==0]
+        overlap_seq_feat, _ = compute_embedding_for_female_mixed_user(self.opt, female_seq, self.model, name = 'overlap')
+        sim = overlap_seq_feat@overlap_seq_feat.T #dot product
+        # sim = torch.nn.CosineSimilarity(dim=1)(overlap_seq_feat,overlap_seq_feat) #cosine similarity
+        top_k_values, top_k_indice = torch.topk(sim, 20, dim=1)
+        n_repeat = 2
+        augmented_seq= []
+        for _ in range(n_repeat):
+            lookup_dict = { i: seq[1] for i, seq in enumerate(female_seq)}
+            top_k_data = [[lookup_dict[idx] for idx in sorted(random.sample(indices, 10))] for indices in top_k_indice.tolist()] #從20個中隨機選10個
+            try:
+                for topk in top_k_data:
+                    item_seq = [[self.opt["source_item_num"] + self.opt["target_item_num"]]*(self.opt["maxlen"] - len(seq)) + [i_t[0] for i_t in seq] for seq in topk]
+                    item_seq = torch.tensor(item_seq)
+                    if self.opt['cuda']:
+                        item_seq = item_seq.cuda()
+                        
+                    # pick similar sequential item
+                    embedding = self.model.item_emb(item_seq)# [10, 50, 128]
+                    vectors_i = embedding[:, :-1, :].permute(1,0,2)    # [49, 10, 128]
+                    vectors_i_plus_1 = embedding[:, 1:, :].permute(1,2,0)  # [49, 128, 10]
+                    sim = vectors_i@vectors_i_plus_1 #[49, 10, 10] 
+                    all_idx = torch.argmax(sim, dim=2) #[49, 10] 
+                    cur = random.randint(0, item_seq.size(0)-1)
+                    selected_idx = [cur]
+                    for idx in all_idx:
+                        selected_idx.append(idx[cur].item())
+                        cur = idx[cur].item()
+                    item_seq = item_seq[selected_idx, torch.arange(item_seq.size(-1))] 
+                    
+                    # random pick item per position
+                    # indices = torch.randint(item_seq.size(0), (item_seq.size(-1),)) 
+                    # item_seq = item_seq[indices, torch.arange(item_seq.size(-1))]  
+                    
+                    new_item_seq = item_seq[item_seq!=self.opt["source_item_num"] + self.opt["target_item_num"]]
+                    if len([s for s in new_item_seq if s >= self.opt["source_item_num"]]) <3:
+                        continue
+                    ts = [i_t[1] for seq in topk for i_t in seq]
+                    sorted_ts = sorted(ts)
+                    new_ts = random.sample(sorted_ts, len(new_item_seq))
+                    new_ts = sorted(new_ts)
+                    new_data = [0,[[i,t] for i, t in zip(new_item_seq.tolist(), new_ts)]]
+                    augmented_seq.append(new_data)
+            except:
+                ipdb.set_trace()
+        self.train_data = self.train_data + augmented_seq
+        print("Number of female augmented sequence:",len(augmented_seq))
+        print("Number of female sequence:",len([s for s in self.train_data if s[0]==0]))
+        print("Number of male sequence:",len([s for s in self.train_data if s[0]==1]))
+        print("*"*50)
+    def generate(self,seq, positions, timestamp, type):
+        if type == "X":
+            generator = self.source_generator
+        elif type == "Y":
+            generator = self.target_generator
+        elif type == "mixed":
+            generator = self.mixed_generator
+        try:
+            torch_seq = torch.LongTensor(seq) #[X,max_len]
+            mask = torch_seq == self.opt['itemnum']
+            torch_position = torch.LongTensor(positions) #[X,max_len]
+            torch_ts = torch.LongTensor(timestamp) #[X,max_len]
+            generator.eval()
+            if self.opt['cuda']:
+                generator = generator.cuda()
+                torch_seq = torch_seq.cuda()
+                torch_position = torch_position.cuda()
+                torch_ts = torch_ts.cuda()
+            with torch.no_grad():
+                if self.opt['time_encode']:
+                    seq_fea = generator(torch_seq,torch_position,torch_ts) #[X,max_len,item_num]
+                else:
+                    seq_fea = generator(torch_seq,torch_position)
+                target_fea = seq_fea[mask]
+                target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
+                probabilities = torch.nn.functional.softmax(target_fea, dim=1)
+                sampled_indices = torch.multinomial(probabilities, 1, replacement=True).squeeze()
+                if type =="Y":
+                    sampled_indices = sampled_indices + self.opt['source_item_num']
+                torch_seq[mask] = sampled_indices
+                new_seq = torch_seq.tolist() 
+        except:
+            ipdb.set_trace()
+        new_seq = [(0,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for sublist, timestamp in zip(new_seq,torch_ts.tolist())]
+        return new_seq
     def item_generate(self):
+        with open(f"./fairness_dataset/Movie_lens_time/{self.filename}/average_sequence_length.json","r")  as f:
+            avg_length = json.load(f)
+        source_flag = 1 if avg_length['source_male'] < avg_length['source_female'] else 0
+        target_flag = 1 if avg_length['target_male'] < avg_length['target_female'] else 0
+        source_item_inserted_num = abs(avg_length['source_male'] -avg_length['source_female']) if abs(avg_length['source_male'] -avg_length['source_female'])>0 else 1
+        target_item_inserted_num = abs(avg_length['target_male'] -avg_length['target_female']) if abs(avg_length['target_male'] -avg_length['target_female'])>0 else 1
+        if source_flag and  target_flag:
+            male_insert_type = "both"
+            female_insert_type = None
+        elif source_flag:
+            male_insert_type = "X"
+            female_insert_type = "Y"
+        elif target_flag:
+            male_insert_type = "Y"
+            female_insert_type ="X"
+        else:
+            male_insert_type = None
+            female_insert_type = "both"
         print("\033[33mitem generation\033[0m")
         female_seq = [d for d in self.train_data if d[0]==0]
         male_seq = [d for d in self.train_data if d[0]==1]
-        l = []
-        positions= []
-        count = 0
-        for gender,seq in female_seq:
+        source_l, source_positions, source_timestamp = [], [], []
+        target_l, target_positions, target_timestamp = [], [], []
+        both_l, both_positions, both_timestamp = [], [], []
+
+        for gender, seq in male_seq:
             #確保mixed sequence不全是source item
-            if all([x < self.opt['source_item_num'] for x in seq]):
+            if all([x[0] < self.opt['source_item_num'] for x in seq]):
                 continue
-            idxs = random.choices(list(range(0, len(seq))), k = self.opt['generate_num'])
+            insert_type = male_insert_type if gender == 1 else female_insert_type
+            if insert_type == "X" :
+                source_item_seq_len = len([i for i,t in seq if i<self.opt['source_item_num']])
+                max_item_num = int(source_item_seq_len/2) if source_item_seq_len>3 else 2
+                
+                sampled_item_inserted_num = torch.clamp(torch.poisson(torch.tensor([source_item_inserted_num], dtype = torch.float32)),min=1, max = max_item_num).int()
+            elif insert_type == "Y":
+                target_item_seq_len = len([i for i,t in seq if i>=self.opt['source_item_num']])
+                max_item_num = int(target_item_seq_len/2) if target_item_seq_len>3 else 2
+                sampled_item_inserted_num = torch.clamp(torch.poisson(torch.tensor([target_item_inserted_num], dtype = torch.float32)),min=1, max = max_item_num).int()
+            else:
+                max_item_num = int(len(seq)/2) if len(seq)>3 else 2
+                if source_item_inserted_num + target_item_inserted_num >max_item_num:
+                    sampled_item_inserted_num = max_item_num
+                else:
+                    sampled_item_inserted_num = source_item_inserted_num + target_item_inserted_num
+            insert_idxs = np.argsort(np.abs(np.diff(np.array([s[1] for s in seq]))))[-sampled_item_inserted_num :] + 1
+            # insert_idxs = random.choices(list(range(0, len(seq))), k = sampled_item_inserted_num)
             new_seq = copy.deepcopy(seq)
-            for index in idxs:
-                new_seq.insert(index, self.opt['itemnum'])
+            for index in insert_idxs:
+                if index == len(new_seq)-1:
+                    new_seq.append([self.opt['itemnum'],new_seq[index][1]])
+                    continue
+                t1 = new_seq[index-1][1]
+                t2 = new_seq[index][1]
+                new_ts = int((t1+t2)/2)
+                new_seq.insert(index, [self.opt['itemnum'],new_ts])
             position = list(range(len(new_seq)+1))[1:]
-            new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + new_seq
+            ts = [0] * (self.opt["maxlen"] - len(new_seq)) + [t for i,t in new_seq]
+            new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + [i for i,t in new_seq]
             position = [0] * (self.opt["maxlen"] - len(position)) + position
-            l.append(new_seq)
-            positions.append(position)
-        torch_seq = torch.LongTensor(l) #[X,max_len]
-        mask = torch_seq == self.opt['itemnum']
-        torch_position = torch.LongTensor(positions) #[X,max_len]
-        self.generator.eval()
-        if self.opt['cuda']:
-            self.generator.cuda()
-            torch_seq = torch_seq.cuda()
-            torch_position = torch_position.cuda()
-        with torch.no_grad():
-            seq_fea = self.generator(torch_seq,torch_position) #[X,max_len,item_num]
-            target_fea = seq_fea[mask]
-            target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
-            probabilities = torch.nn.functional.softmax(target_fea, dim=1)
-            sampled_indices = torch.multinomial(probabilities, 1, replacement=True).squeeze()
-            if self.opt["generate_type"] =="Y" and self.opt['pretrain_model'] == "Y":
-                sampled_indices = sampled_indices + self.opt['source_item_num']
-            torch_seq[mask] = sampled_indices
-            new_female_seq = torch_seq.tolist() 
-        new_female_seq = [(0,[x for x in sublist if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for sublist in new_female_seq]
-        self.train_data = new_female_seq + male_seq
+            if (gender==0 and female_insert_type =="X") or (gender==1 and male_insert_type =="X"): 
+                source_l.append(new_seq)
+                source_positions.append(position)
+                source_timestamp.append(ts)
+            elif (gender==0 and female_insert_type =="Y") or (gender==1 and male_insert_type =="Y"):
+                target_l.append(new_seq)
+                target_positions.append(position)
+                target_timestamp.append(ts)
+            else:
+                both_l.append(new_seq)
+                both_positions.append(position)
+                both_timestamp.append(ts)
+        
+        # if female_insert_type is not None:
+        #     for gender,seq in female_seq:
+        #         #確保mixed sequence不全是source item
+        #         if all([x[0] < self.opt['source_item_num'] for x in seq]):
+        #             continue
+        #         idxs = random.choices(list(range(0, len(seq))), k = self.opt['generate_num'])
+        #         new_seq = copy.deepcopy(seq)
+        #         for index in idxs:
+        #             if index == len(new_seq)-1:
+        #                 new_seq.append([self.opt['itemnum'],new_seq[index][1]])
+        #                 continue
+        #             t1 = new_seq[index-1][1]
+        #             t2 = new_seq[index][1]
+        #             new_ts = int((t1+t2)/2)
+        #             new_seq.insert(index, [self.opt['itemnum'],new_ts])
+        #         position = list(range(len(new_seq)+1))[1:]
+        #         ts = [0] * (self.opt["maxlen"] - len(new_seq)) + [t for i,t in new_seq]
+        #         new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + [i for i,t in new_seq]
+        #         position = [0] * (self.opt["maxlen"] - len(position)) + position
+        #         l.append(new_seq)
+        #         positions.append(position)
+        #         timestamp.append(ts)
+        new_seq1, new_seq2, new_seq3 = [], [], []
+        if source_l:
+            new_seq1 = self.generate(source_l, source_positions, source_timestamp, type = "X")
+        if target_l:
+            new_seq2 = self.generate(target_l, target_positions, target_timestamp, type = "Y")
+        if both_l:
+            new_seq3 = self.generate(both_l, both_positions, both_timestamp, type ="mixed")
+        self.train_data = new_seq1 + new_seq2 + new_seq3 + female_seq
         # print("Number of source item sequnece detected:",count)
     def read_item(self, fname):
         with codecs.open(fname, "r", encoding="utf-8") as fr:
@@ -135,7 +293,7 @@ class DataLoader(DataLoader):
                     continue
                 res = []
                 line = line.strip()
-                gender = list(map(int, line.split()[1]))
+                gender = list(map(int, line.split()[1]))[0]
                 i_t = [list(map(int,tmp.split("|"))) for tmp in line.split()[2:]]
                 # data = (line[0],line[1:])
                 data = (gender,i_t)
@@ -152,7 +310,7 @@ class DataLoader(DataLoader):
                     continue
                 res = []
                 line = line.strip()
-                gender = list(map(int, line.split()[1]))
+                gender = list(map(int, line.split()[1]))[0]
                 i_t = [list(map(int,tmp.split("|"))) for tmp in line.split()[2:]]
                 res = (gender, i_t)
                 res_2 = []
@@ -410,10 +568,10 @@ class DataLoader(DataLoader):
                 
             ts_d = [t for i,t in d[0]]
             seq = [item for item,ts in d[0]]
-            # if self.opt['time_encode']:
-            #     ts_d = self.time_transformation(ts_d)
-            #     ts_xd = self.time_transformation(ts_xd)
-            #     ts_yd = self.time_transformation(ts_yd)
+
+            # ts_d = self.subtract_min(ts_d)
+            # ts_xd = self.subtract_min(ts_xd)
+            # ts_yd = self.subtract_min(ts_yd)
             if len(d[0]) < max_len:
                 position = [0] * (max_len - len(d[0])) + position
                 x_position = [0] * (max_len - len(d[0])) + x_position
@@ -437,14 +595,34 @@ class DataLoader(DataLoader):
                 if x_position[-id]:
                     x_last = -id
                     break
-
+            x_last_3 = []
+            c = 0
+            for id in range(len(x_position)):
+                id += 1
+                if x_position[-id]:
+                    c+=1
+                    x_last_3.insert(0,-id)
+                    if c==3:
+                        break
             y_last = -1
             for id in range(len(y_position)):
                 id += 1
                 if y_position[-id]:
                     y_last = -id
                     break
-
+            y_last_3 = []
+            c = 0
+            for id in range(len(y_position)):
+                id += 1
+                if y_position[-id]:
+                    c+=1
+                    y_last_3.insert(0,-id)
+                    if c==3:
+                        break
+            count = 0
+            if len(x_last_3)<3 or len(y_last_3)<3 :
+                count+=1
+                continue
             negative_sample = []
             for i in range(999):
                 while True:
@@ -460,12 +638,12 @@ class DataLoader(DataLoader):
                             break
             if d[1]:
                 processed.append([seq, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, x_last, y_last, d[1],
-                                  d[2]-self.opt["source_item_num"], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index,gender])
+                                  d[2]-self.opt["source_item_num"], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index,gender,x_last_3,y_last_3])
             else:
                 processed.append([seq, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, x_last, y_last, d[1],
-                                  d[2], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index, gender])
+                                  d[2], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index, gender, x_last_3,y_last_3])
+        print("Number of test/valid sequence detected:",count)
         return processed
-
 
     def preprocess(self):
 
@@ -807,14 +985,12 @@ class DataLoader(DataLoader):
             else:   
                 
                 return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.tensor(batch[6]), torch.tensor(batch[7]), torch.tensor(batch[8]), torch.tensor(batch[9]),\
-                    torch.LongTensor(batch[10]),torch.LongTensor(batch[11]),torch.LongTensor(batch[12]),torch.LongTensor(batch[13]),torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),torch.LongTensor(batch[18]),torch.LongTensor(batch[19]))
+                    torch.LongTensor(batch[10]),torch.LongTensor(batch[11]),torch.LongTensor(batch[12]),torch.LongTensor(batch[13]),torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]))
         else :
             if self.collate_fn:
                 batch = self.collate_fn(batch)
                 return batch
             else:
-                # print(torch.LongTensor(batch[1]).shape)
-                # return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]))
                 return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.LongTensor(batch[6]), torch.LongTensor(batch[7]), torch.LongTensor(batch[8]), torch.LongTensor(batch[9]), torch.LongTensor(batch[10]), torch.LongTensor(batch[11]),\
                         torch.LongTensor(batch[12]), torch.LongTensor(batch[13]), torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),\
                         torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]),torch.LongTensor(batch[26]),torch.LongTensor(batch[27]),torch.LongTensor(batch[28]))
@@ -823,9 +999,6 @@ class DataLoader(DataLoader):
             yield self.__getitem__(i)
 
 class GDataLoader(DataLoader):
-    """
-    Load data from json files, preprocess and prepare batches.
-    """
     
     #mask_id = opt["source_item_num"]+ opt["target_item_num"] +1
     
@@ -890,7 +1063,7 @@ class GDataLoader(DataLoader):
                     continue
                 res = []
                 line = line.strip()
-                gender = list(map(int, line.split()[1]))
+                gender = list(map(int, line.split()[1]))[0]
                 i_t = [list(map(int,tmp.split("|"))) for tmp in line.split()[2:]]
                 # data = (line[0],line[1:])
                 data = (gender,i_t)
@@ -1079,7 +1252,7 @@ class NonoverlapDataLoader(DataLoader):
                     continue
                 res = []
                 line = line.strip()
-                gender = list(map(int, line.split()[1]))
+                gender = list(map(int, line.split()[1]))[0]
                 i_t = [list(map(int,tmp.split("|"))) for tmp in line.split()[2:]]
                 # data = (line[0],line[1:])
                 data = (gender,i_t)

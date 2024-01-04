@@ -151,112 +151,115 @@ parser.add_argument('--time_transformation', type=str, default="speedup", help="
 
 parser.add_argument('--valid_epoch', type=int, default= 3, help='valid_epoch')
 parser.add_argument('--mixed_included',type=bool, default= False ,help="mixed included or not")
-parser.add_argument('--main_task',type=str, default="X" ,help="[dual, X, Y]")
+parser.add_argument('--main_task',type=str, default="Y" ,help="[dual, X, Y]")
 
-parser.add_argument('--data_augmentation',type=str,default= None ,help="[item_generation, nonoverlap_augmentation]")
+
+parser.add_argument('--data_augmentation',type=str,default= None ,help="[item_generation, user_generation]")
 parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
 parser.add_argument('--domain', type=str,default= "cross" ,help="target only or cross domain")
 parser.add_argument('--topk', type=int,default= 10 ,help="topk item recommendation")
+# item generation
 parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
 parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item to generate")
 
 # nonoverlap user augmentation
 parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment size")
+
 args, unknown = parser.parse_known_args()
 
-modes = [
-    # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
-    # "fairness_baseline_Y_triple_pull"
-    # "fairness_baseline_Y","fairness_baseline_Y_single_domain",
-    "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize30"
-]
-training_modes = ["finetune"]
-# evaluation_models = ["fairness_baseline_Y","fairness_baseline_Y_single_domain"]
-domain = ["cross"]
-main_tasks = ["Y"]
-data_augmentation = "nonoverlap_augmentation"
-time_encode = False
-folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
-folder_list = [x.split("/")[-1] for x in folder_list]
-data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-print(data_dir)
-data_dir = ["adventure_romance","horror_adventure","thriller_romance"]
-warmup_epoch = 1000 # prevent from doing clustering 
-print("Config of Experiment:")
-print(f"Modes: {modes}")
-print("training_mode:", training_modes)
-print(f"Data: {data_dir}")
-num_seeds = 5
-for data_idx in range(len(data_dir)):
-    data_name = data_dir[data_idx]
-    for i, mode in enumerate(modes):
-        for seed in range(1, num_seeds+1):
-            args.training_mode = training_modes[i]
-            args.domain = domain[i]
-            args.main_task = main_tasks[i]      
-            # args.evaluation_model = evaluation_models[i]
-            args.time_encode = time_encode
-            args.data_augmentation = data_augmentation
-            args.data_dir = data_name
-            args.id = mode
-            args.seed = seed
-            args.warmup_epoch = warmup_epoch
-            args.num_cluster = "2,3,4"
-            main(args)
-
-# for finetune
+# modes = [
+#     # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
+#     # "fairness_baseline_Y_triple_pull"
+#     # "fairness_baseline_Y_time_eval","fairness_baseline_Y_single_domain_time_eval",
+#     # "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize40_eval","fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize50_eval",
+#     # "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize40","fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize50"
+#     "fairness_maintaskY_usergen_same_repeat2_eval"
+# ]
+# training_modes = ["evaluation"]
+# evaluation_models = ["fairness_maintaskY_usergen_same_repeat2"]
+# # evaluation_models = ["fairness_baseline_Y","fairness_baseline_Y_single_domain"]
+# domains = ["cross"]
+# main_tasks = ["Y"]
+# data_augmentation = "user_generation"
+# time_encode = None
 # folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
 # folder_list = [x.split("/")[-1] for x in folder_list]
-# data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
+# data_dir = [x for x in folder_list]
+# # data_dir = ["thriller_romance","comedy_drama"]
 # print(data_dir)
-
-# # data_dir = ['action_horror',"action_romance"]
-# pretrain_models = ["X","mixed"]
-# data_augmentation = 'item_generation'
-# load_pretrain_epochs = [20]
-# training_mode = "finetune"
-# generate_nums = [3, 5, 7]
-# generate_types = ["X","mixed"]
-# main_task = "Y"
-# domain = "cross"
+# warmup_epoch = 1000 # prevent from doing clustering 
 # print("Config of Experiment:")
-# print(f"load_pretrain_epochs: {load_pretrain_epochs}")
+# print(f"Modes: {modes}")
+# print("training_mode:", training_modes)
 # print(f"Data: {data_dir}")
 # num_seeds = 5
 # for data_idx in range(len(data_dir)):
 #     data_name = data_dir[data_idx]
-#     for i, model in enumerate(pretrain_models):
-#         for epoch in load_pretrain_epochs:
-#             for generate_num in generate_nums:
-#                 for seed in range(1, num_seeds+1):
-#                     args.pretrain_model = model
-#                     args.load_pretrain_epoch = epoch           
-#                     args.training_mode = training_mode
-#                     args.generate_type = generate_types[i]
-#                     args.generate_num = generate_num
-#                     args.domain = domain
-#                     args.main_task = main_task
-#                     args.data_dir = data_name
-#                     id =f"fairness_maintask{main_task}_nonoverlap_generatenum{generate_num}_{epoch}epoch"
-#                     args.id = id
-#                     args.seed = seed
-#                     args.num_cluster = "2,3,4"
-#                     args.warmup_epoch = 10000
-#                     args.data_augmentation = data_augmentation
-#                     main(args)
+#     for i, mode in enumerate(modes):
+#         for seed in range(1, num_seeds+1):
+#             args.training_mode = training_modes[i]
+#             args.domain = domains[i]
+#             args.main_task = main_tasks[i] 
+#             args.time_encode = time_encode
+#             args.data_augmentation = data_augmentation     
+#             args.evaluation_model = evaluation_models[i]
+#             args.data_dir = data_name
+#             args.id = mode
+#             args.seed = seed
+#             args.warmup_epoch = warmup_epoch
+#             args.num_cluster = "2,3,4"
+#             main(args)
+
+# for finetune item generation
+folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
+folder_list = [x.split("/")[-1] for x in folder_list]
+data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
+print(data_dir)
+# data_dir = ['thriller_romance','sci-fi_romance','adventure_thriller']
+# generator_models = ["X_time","mixed_time"]
+# generate_types = ["X","mixed"]
+# generate_nums = [3, 5, 7]
+data_augmentation = 'item_augmentation'
+load_pretrain_epochs = [20]
+training_mode = "finetune"
+main_task = "Y"
+domain = "cross"
+time_encode = False
+print("Config of Experiment:")
+print(f"load_pretrain_epochs: {load_pretrain_epochs}")
+print(f"Data: {data_dir}")
+num_seeds = 5
+for data_idx in range(len(data_dir)):
+    data_name = data_dir[data_idx]
+    for epoch in load_pretrain_epochs:
+        for seed in range(1, num_seeds+1):
+            args.load_pretrain_epoch = epoch           
+            args.training_mode = training_mode
+            args.data_augmentation = data_augmentation
+            args.domain = domain
+            args.main_task = main_task
+            args.time_encode = time_encode
+            args.data_dir = data_name
+            id =f"fairness_maintask{main_task}_generatorMale_generatenumPoisson_{epoch}epoch"
+            args.id = id
+            args.seed = seed
+            args.num_cluster = "2,3,4"
+            args.warmup_epoch = 10000
+            main(args)
                     
 # evaluation
 # folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
 # folder_list = [x.split("/")[-1] for x in folder_list]
 # data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
 # print(data_dir)
-# mode_name = glob.glob("./saved_models/adventure_romance/fairness_maintaskY*")
-# evaluation_models = [x.split("/")[-1] for x in mode_name] 
-
-# # data_dir = ['adventure_romance']
-# load_pretrain_epochs = [20,40]
-# training_mode = "evaluation"
+# mode_name = glob.glob("./saved_models/comedy_thriller/fairness_maintaskY_generatorAll*20epoch")
+# evaluation_models = [ x.split("/")[-1] for x in mode_name] 
+# print("evaluation_models:", evaluation_models)
+# data_dir = ['adventure_thriller']
 # # generate_types = ["X","Y","mixed"]
+# load_pretrain_epochs = [20]
+# training_mode = "evaluation"
+# time_encode = False
 # main_task = "Y"
 # domain = "cross"
 # print("Config of Experiment:")
@@ -272,6 +275,7 @@ for data_idx in range(len(data_dir)):
 #             args.domain = domain
 #             args.main_task = main_task
 #             args.data_dir = data_name
+#             args.time_encode = time_encode
 #             id =f"{model}_eval"
 #             args.id = id
 #             args.seed = seed

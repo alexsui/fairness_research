@@ -44,8 +44,9 @@ class TimeEncoder(torch.nn.Module):
         
         # Stack the features
         time_features = np.stack((times_of_day_sin, times_of_day_cos,
-                                days_of_week_sin, days_of_week_cos,days_of_month_sin,days_of_month_cos,
-                                days_of_year_sin, days_of_year_cos), axis=-1)
+                                days_of_week_sin, days_of_week_cos,days_of_month_sin, days_of_month_cos,
+                                days_of_year_sin, days_of_year_cos
+                                ), axis=-1)
         
         # Initialize the scaler
         scaler = StandardScaler()
@@ -158,7 +159,7 @@ class ATTENTION(torch.nn.Module):
         super(ATTENTION, self).__init__()
         self.opt = opt
         self.emb_dropout = torch.nn.Dropout(p=self.opt["dropout"])
-        self.pos_emb = torch.nn.Embedding(self.opt["maxlen"], self.opt["hidden_units"], padding_idx=0)  # TO IMPROVE
+        self.pos_emb = torch.nn.Embedding(self.opt["maxlen"]+1, self.opt["hidden_units"], padding_idx=0)  # TO IMPROVE
         # TODO: loss += args.l2_emb for regularizing embedding vectors during training
         # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
         self.attention_layernorms = torch.nn.ModuleList() # to be Q for self-attention
@@ -423,19 +424,20 @@ class C2DSR(torch.nn.Module):
         false_seqs_fea = self.encoder(false_seqs, seqs, position)
         return false_seqs_fea
 class Generator(nn.Module):
-    def __init__(self, opt):
+    def __init__(self, opt, type):
         super(Generator, self).__init__()
         self.opt = opt
         self.item_embed = torch.nn.Embedding(self.opt["itemnum"] + 1, self.opt["hidden_units"],
                                             padding_idx= self.opt["itemnum"] - 1)   
         self.encoder = ATTENTION(opt)
-        if self.opt['generate_type'] == "X":
+        if type == "X":
             self.pred_head = nn.Linear(opt['hidden_units'], opt['source_item_num'])
-        elif self.opt['generate_type'] == "Y":
+        elif type == "Y":
             self.pred_head = nn.Linear(opt['hidden_units'], opt['target_item_num'])
         else:
             self.pred_head = nn.Linear(opt['hidden_units'], opt['itemnum'] - 1)
-    def forward(self, o_seqs, position):
+    def forward(self, o_seqs, position, ts = None):
         seqs = self.item_embed(o_seqs)
-        seqs_fea = self.encoder(o_seqs, seqs, position,causality_mask = False)
+        # ipdb.set_trace()
+        seqs_fea = self.encoder(o_seqs, seqs, position,causality_mask = False,ts = ts)
         return self.pred_head(seqs_fea)
