@@ -441,3 +441,50 @@ class Generator(nn.Module):
         # ipdb.set_trace()
         seqs_fea = self.encoder(o_seqs, seqs, position,causality_mask = False,ts = ts)
         return self.pred_head(seqs_fea)
+class GenderDiscriminator(nn.Module):
+    def __init__(self,opt):
+        super(GenderDiscriminator, self).__init__()
+        self.opt = opt
+        self.layer = nn.Sequential(
+            nn.Linear(opt['hidden_units'], opt['hidden_units']),
+            nn.ReLU(),
+            nn.Linear(opt['hidden_units'], opt['hidden_units']),
+            nn.ReLU(),
+            nn.Linear(opt['hidden_units'],1),
+            nn.Sigmoid()
+        )
+    def forward(self, x):
+        return self.layer(x)
+        
+class ClusterRepresentation(nn.Module):
+    def __init__(self, opt, feature_dim, num_clusters, topk):#topk most similar cluster
+        super(ClusterRepresentation, self).__init__()
+        self.opt = opt
+        self.num_clusters = num_clusters
+        self.feature_dim = feature_dim
+        self.topk = topk
+        self.cluster_prototypes = nn.Parameter(torch.randn(num_clusters, feature_dim))
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(feature_dim*topk, feature_dim),
+            nn.ReLU(),
+            nn.Linear(feature_dim, feature_dim),
+        )
+        
+    def forward(self, features):
+        # features = features[gender==self.gender]
+        # indices = torch.where(gender==self.gender)[0]
+        # mapping = torch.empty(indices.max() + 1)
+        # if self.opt['cuda']:
+        #     mapping = mapping.cuda()
+        # # Populate the lookup tensor with mapped values
+        # for i, v in enumerate(indices):
+        #     mapping[v] = i
+        sim = features@self.cluster_prototypes.T #[X, num_clusters]
+        sim /= sim.max(-1,keepdim = True)[0]
+        weight = torch.softmax(sim, dim=-1)
+        new_cluster = weight.T@features
+        new_sim = features@new_cluster.T
+        top_k_values, top_k_indice  = torch.topk(new_sim, self.topk, dim=-1)#[X, topk]
+        multi_interest = new_cluster[top_k_indice.squeeze()]#[B,topk,feature_dim]
+        multi_interest = self.feature_extractor(multi_interest.reshape(-1, self.feature_dim*self.topk))#[B, feature_dim]
+        return new_cluster, multi_interest

@@ -58,14 +58,14 @@ class DataLoader(DataLoader):
             self.num_examples = len(data)
             
             self.all_data = data
-            print("train_data length:",len(data))
+            print("number of train_data:",len(data))
         elif evaluation == 2:
             self.test_data = self.read_test_data(source_valid_data)
             data = self.preprocess_for_predict()
         else :
             self.test_data = self.read_test_data(source_test_data)
             data = self.preprocess_for_predict()
-            print("test_data length:",len(data))
+            print("number of test_data:",len(data))
         
         # shuffle for training
         if evaluation == -1:
@@ -98,80 +98,95 @@ class DataLoader(DataLoader):
         for _ in range(n_repeat):
             lookup_dict = { i: seq[1] for i, seq in enumerate(female_seq)}
             top_k_data = [[lookup_dict[idx] for idx in sorted(random.sample(indices, 10))] for indices in top_k_indice.tolist()] #從20個中隨機選10個
-            try:
-                for topk in top_k_data:
-                    item_seq = [[self.opt["source_item_num"] + self.opt["target_item_num"]]*(self.opt["maxlen"] - len(seq)) + [i_t[0] for i_t in seq] for seq in topk]
-                    item_seq = torch.tensor(item_seq)
-                    if self.opt['cuda']:
-                        item_seq = item_seq.cuda()
-                        
-                    # pick similar sequential item
-                    embedding = self.model.item_emb(item_seq)# [10, 50, 128]
-                    vectors_i = embedding[:, :-1, :].permute(1,0,2)    # [49, 10, 128]
-                    vectors_i_plus_1 = embedding[:, 1:, :].permute(1,2,0)  # [49, 128, 10]
-                    sim = vectors_i@vectors_i_plus_1 #[49, 10, 10] 
-                    all_idx = torch.argmax(sim, dim=2) #[49, 10] 
-                    cur = random.randint(0, item_seq.size(0)-1)
-                    selected_idx = [cur]
-                    for idx in all_idx:
-                        selected_idx.append(idx[cur].item())
-                        cur = idx[cur].item()
-                    item_seq = item_seq[selected_idx, torch.arange(item_seq.size(-1))] 
+            # try:
+            for topk in top_k_data:
+                item_seq = [[self.opt["source_item_num"] + self.opt["target_item_num"]]*(self.opt["maxlen"] - len(seq)) + [i_t[0] for i_t in seq] for seq in topk]
+                item_seq = torch.tensor(item_seq)
+                if self.opt['cuda']:
+                    item_seq = item_seq.cuda()
                     
-                    # random pick item per position
-                    # indices = torch.randint(item_seq.size(0), (item_seq.size(-1),)) 
-                    # item_seq = item_seq[indices, torch.arange(item_seq.size(-1))]  
-                    
-                    new_item_seq = item_seq[item_seq!=self.opt["source_item_num"] + self.opt["target_item_num"]]
-                    if len([s for s in new_item_seq if s >= self.opt["source_item_num"]]) <3:
-                        continue
-                    ts = [i_t[1] for seq in topk for i_t in seq]
-                    sorted_ts = sorted(ts)
-                    new_ts = random.sample(sorted_ts, len(new_item_seq))
-                    new_ts = sorted(new_ts)
-                    new_data = [0,[[i,t] for i, t in zip(new_item_seq.tolist(), new_ts)]]
-                    augmented_seq.append(new_data)
-            except:
-                ipdb.set_trace()
+                ### pick similar sequential item ###
+                embedding = self.model.item_emb(item_seq)# [10, 50, 128]
+                vectors_i = embedding[:, :-1, :].permute(1,0,2)    # [49, 10, 128]
+                vectors_i_plus_1 = embedding[:, 1:, :].permute(1,2,0)  # [49, 128, 10]
+                sim = vectors_i@vectors_i_plus_1 #[49, 10, 10] 
+                topk_idx = torch.topk(sim,3, dim=2)[1] #[49, 10, 5] 
+                # all_idx = torch.argmax(sim, dim=2) #[49, 10] 
+                cur = random.randint(0, item_seq.size(0)-1)
+                cur = 0
+                selected_idx = [cur]
+                for idx in topk_idx:
+                    i = random.randint(0, 3)
+                    selected_idx.append(idx[cur,i].item())
+                    cur = idx[cur,i].item()
+                item_seq = item_seq[selected_idx, torch.arange(item_seq.size(-1))] 
+                
+                ### random pick item per position ###
+                # indices = torch.randint(item_seq.size(0), (item_seq.size(-1),)) 
+                # item_seq = item_seq[indices, torch.arange(item_seq.size(-1))]  
+                
+                new_item_seq = item_seq[item_seq!=self.opt["source_item_num"] + self.opt["target_item_num"]]
+                if len([s for s in new_item_seq if s >= self.opt["source_item_num"]]) <3:
+                    continue
+                ts = [i_t[1] for seq in topk for i_t in seq]
+                sorted_ts = sorted(ts)
+                new_ts = random.sample(sorted_ts, len(new_item_seq))
+                new_ts = sorted(new_ts)
+                new_data = [0,[[i,t] for i, t in zip(new_item_seq.tolist(), new_ts)]]
+                augmented_seq.append(new_data)
+            # except:
+            #     ipdb.set_trace()
         self.train_data = self.train_data + augmented_seq
         print("Number of female augmented sequence:",len(augmented_seq))
         print("Number of female sequence:",len([s for s in self.train_data if s[0]==0]))
         print("Number of male sequence:",len([s for s in self.train_data if s[0]==1]))
         print("*"*50)
     def generate(self,seq, positions, timestamp, type):
+        with open(f"./fairness_dataset/Movie_lens_time/{self.opt['data_dir']}/item_IF.json","r") as f:
+            item_if = json.load(f)
+        
+        gender = [s[0] for s in seq]
+        seq = [s[1] for s in seq]
         if type == "X":
             generator = self.source_generator
         elif type == "Y":
             generator = self.target_generator
         elif type == "mixed":
             generator = self.mixed_generator
-        try:
-            torch_seq = torch.LongTensor(seq) #[X,max_len]
-            mask = torch_seq == self.opt['itemnum']
-            torch_position = torch.LongTensor(positions) #[X,max_len]
-            torch_ts = torch.LongTensor(timestamp) #[X,max_len]
-            generator.eval()
-            if self.opt['cuda']:
-                generator = generator.cuda()
-                torch_seq = torch_seq.cuda()
-                torch_position = torch_position.cuda()
-                torch_ts = torch_ts.cuda()
-            with torch.no_grad():
-                if self.opt['time_encode']:
-                    seq_fea = generator(torch_seq,torch_position,torch_ts) #[X,max_len,item_num]
-                else:
-                    seq_fea = generator(torch_seq,torch_position)
-                target_fea = seq_fea[mask]
-                target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
-                probabilities = torch.nn.functional.softmax(target_fea, dim=1)
-                sampled_indices = torch.multinomial(probabilities, 1, replacement=True).squeeze()
-                if type =="Y":
-                    sampled_indices = sampled_indices + self.opt['source_item_num']
-                torch_seq[mask] = sampled_indices
-                new_seq = torch_seq.tolist() 
-        except:
-            ipdb.set_trace()
-        new_seq = [(0,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for sublist, timestamp in zip(new_seq,torch_ts.tolist())]
+        torch_seq = torch.LongTensor(seq) #[X,max_len]
+        mask = torch_seq == self.opt['itemnum']
+        torch_position = torch.LongTensor(positions) #[X,max_len]
+        torch_ts = torch.LongTensor(timestamp) #[X,max_len]
+        generator.eval()
+        if self.opt['cuda']:
+            generator = generator.cuda()
+            torch_seq = torch_seq.cuda()
+            torch_position = torch_position.cuda()
+            torch_ts = torch_ts.cuda()
+        with torch.no_grad():
+            if self.opt['time_encode']:
+                seq_fea = generator(torch_seq,torch_position,torch_ts) #[X,max_len,item_num]
+            else:
+                seq_fea = generator(torch_seq,torch_position)
+            target_fea = seq_fea[mask]
+            target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
+            probabilities = torch.nn.functional.softmax(target_fea, dim=1)
+            sampled_indices = torch.multinomial(probabilities, 5, replacement=False).squeeze() #[X,10]
+            ### insert high interaction fairness score item ### 
+            mapping = torch.zeros(self.opt['source_item_num']+self.opt['target_item_num'],dtype=torch.float32).cuda()
+            for k in item_if.keys():
+                mapping[int(k)] = item_if[k]
+            # ipdb.set_trace()
+            random_idx = torch.randint(0,3,(len(sampled_indices),))
+            selected_idx_index = mapping[sampled_indices].topk(k=3,dim=-1)[1][torch.arange(len(sampled_indices)),random_idx]  
+            # ipdb.set_trace() 
+            sampled_indices = sampled_indices[torch.arange(len(sampled_indices)),selected_idx_index]
+            if type =="Y":
+                sampled_indices = sampled_indices + self.opt['source_item_num']
+            torch_seq[mask] = sampled_indices
+            new_seq = torch_seq.tolist() 
+       
+        new_seq = [(g,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for g, sublist, timestamp in zip(gender, new_seq, torch_ts.tolist())]
         return new_seq
     def item_generate(self):
         with open(f"./fairness_dataset/Movie_lens_time/{self.filename}/average_sequence_length.json","r")  as f:
@@ -198,27 +213,39 @@ class DataLoader(DataLoader):
         source_l, source_positions, source_timestamp = [], [], []
         target_l, target_positions, target_timestamp = [], [], []
         both_l, both_positions, both_timestamp = [], [], []
-
-        for gender, seq in male_seq:
+        no_augment_data = []
+        max_item_num =7
+        min_item_num = 1
+        for gender, seq in self.train_data:
             #確保mixed sequence不全是source item
             if all([x[0] < self.opt['source_item_num'] for x in seq]):
                 continue
             insert_type = male_insert_type if gender == 1 else female_insert_type
             if insert_type == "X" :
-                source_item_seq_len = len([i for i,t in seq if i<self.opt['source_item_num']])
-                max_item_num = int(source_item_seq_len/2) if source_item_seq_len>3 else 2
-                
-                sampled_item_inserted_num = torch.clamp(torch.poisson(torch.tensor([source_item_inserted_num], dtype = torch.float32)),min=1, max = max_item_num).int()
+                # source_item_seq_len = len([i for i,t in seq if i<self.opt['source_item_num']])
+                # if gender == 1:
+                #     max_item_num = int(source_item_seq_len/2)-1 if source_item_seq_len>3 else 2
+                # else:    
+                #     max_item_num = int(source_item_seq_len/2) if source_item_seq_len>3 else 2
+                item_inserted_num = source_item_inserted_num-1 if gender == 1 else source_item_inserted_num
+                sampled_item_inserted_num = torch.clamp(torch.poisson(torch.tensor([item_inserted_num], dtype = torch.float32)),min=min_item_num, max = max_item_num).int()
             elif insert_type == "Y":
-                target_item_seq_len = len([i for i,t in seq if i>=self.opt['source_item_num']])
-                max_item_num = int(target_item_seq_len/2) if target_item_seq_len>3 else 2
-                sampled_item_inserted_num = torch.clamp(torch.poisson(torch.tensor([target_item_inserted_num], dtype = torch.float32)),min=1, max = max_item_num).int()
-            else:
-                max_item_num = int(len(seq)/2) if len(seq)>3 else 2
+                # target_item_seq_len = len([i for i,t in seq if i>=self.opt['source_item_num']])
+                # if gender == 1:
+                #     max_item_num = int(target_item_seq_len/2)-1 if target_item_seq_len>3 else 2
+                # else:
+                #     max_item_num = int(target_item_seq_len/2) if target_item_seq_len>3 else 2
+                item_inserted_num = target_item_inserted_num-1 if gender == 1 else target_item_inserted_num
+                sampled_item_inserted_num = torch.clamp(torch.poisson(torch.tensor([item_inserted_num], dtype = torch.float32)),min=min_item_num, max = max_item_num).int()
+            elif insert_type == "both":
+                # max_item_num = int(len(seq)/2) if len(seq)>3 else 2
                 if source_item_inserted_num + target_item_inserted_num >max_item_num:
-                    sampled_item_inserted_num = max_item_num
+                    sampled_item_inserted_num = max_item_num-1 if gender == 1 else max_item_num
                 else:
-                    sampled_item_inserted_num = source_item_inserted_num + target_item_inserted_num
+                    sampled_item_inserted_num = source_item_inserted_num + target_item_inserted_num-1 if gender == 1 else source_item_inserted_num + target_item_inserted_num
+            else:
+                no_augment_data.append([gender,seq])
+                continue
             insert_idxs = np.argsort(np.abs(np.diff(np.array([s[1] for s in seq]))))[-sampled_item_inserted_num :] + 1
             # insert_idxs = random.choices(list(range(0, len(seq))), k = sampled_item_inserted_num)
             new_seq = copy.deepcopy(seq)
@@ -230,20 +257,27 @@ class DataLoader(DataLoader):
                 t2 = new_seq[index][1]
                 new_ts = int((t1+t2)/2)
                 new_seq.insert(index, [self.opt['itemnum'],new_ts])
-            position = list(range(len(new_seq)+1))[1:]
-            ts = [0] * (self.opt["maxlen"] - len(new_seq)) + [t for i,t in new_seq]
-            new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + [i for i,t in new_seq]
-            position = [0] * (self.opt["maxlen"] - len(position)) + position
+            if len(new_seq) < self.opt['maxlen']:
+                position = list(range(len(new_seq)+1))[1:]
+                ts = [0] * (self.opt["maxlen"] - len(new_seq)) + [t for i,t in new_seq]
+                new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + [i for i,t in new_seq]
+                position = [0] * (self.opt["maxlen"] - len(position)) + position
+            else:
+                position = list(range(len(new_seq)+1))[1:]
+                ts = [t for i,t in new_seq]
+                new_seq = [i for i,t in new_seq][-self.opt['maxlen']:]
+                position = position[:self.opt['maxlen']]
+                ts = ts[-self.opt['maxlen']:]
             if (gender==0 and female_insert_type =="X") or (gender==1 and male_insert_type =="X"): 
-                source_l.append(new_seq)
+                source_l.append([gender, new_seq])
                 source_positions.append(position)
                 source_timestamp.append(ts)
             elif (gender==0 and female_insert_type =="Y") or (gender==1 and male_insert_type =="Y"):
-                target_l.append(new_seq)
+                target_l.append([gender, new_seq])
                 target_positions.append(position)
                 target_timestamp.append(ts)
             else:
-                both_l.append(new_seq)
+                both_l.append([gender, new_seq])
                 both_positions.append(position)
                 both_timestamp.append(ts)
         
@@ -276,7 +310,7 @@ class DataLoader(DataLoader):
             new_seq2 = self.generate(target_l, target_positions, target_timestamp, type = "Y")
         if both_l:
             new_seq3 = self.generate(both_l, both_positions, both_timestamp, type ="mixed")
-        self.train_data = new_seq1 + new_seq2 + new_seq3 + female_seq
+        self.train_data = new_seq1 + new_seq2 + new_seq3 + no_augment_data
         # print("Number of source item sequnece detected:",count)
     def read_item(self, fname):
         with codecs.open(fname, "r", encoding="utf-8") as fr:
@@ -305,6 +339,7 @@ class DataLoader(DataLoader):
             return elem[1]
         with codecs.open(test_file, "r", encoding="utf-8") as infile:
             test_data = []
+            deleted_test_data_num = 0
             for id, line in enumerate(infile.readlines()):
                 if id<2:
                     continue
@@ -314,13 +349,35 @@ class DataLoader(DataLoader):
                 i_t = [list(map(int,tmp.split("|"))) for tmp in line.split()[2:]]
                 res = (gender, i_t)
                 res_2 = []
-                for r in res[1][:-1]:
+                for r in res[1]:
                     res_2.append(r)
-
-                if res[1][-1][0] >= self.opt["source_item_num"]: # denoted the corresponding validation/test entry , 若為y domain的item_id
-                    test_data.append([res_2, 1, res[1][-1][0], res[0]]) #[整個test sequence, 1, 最後一個item_id, gender]
-                else :
-                    test_data.append([res_2, 0, res[1][-1][0], res[0]])
+                    
+                target_idx = -1
+                if all([x[0] < self.opt['source_item_num'] for x in res[1]]) or all([x[0] >= self.opt['source_item_num'] for x in res[1]]): # test data has no X/Y domain item
+                    deleted_test_data_num+=1
+                    continue
+                for idx in range(len(res[1])-1,0,-1):
+                    if self.opt['main_task']=="X":
+                        if res[1][idx][0]<self.opt["source_item_num"]:
+                            target_idx = idx
+                            break
+                    elif self.opt['main_task']=="Y":
+                        if res[1][idx][0]>=self.opt["source_item_num"]:
+                            target_idx = idx
+                            break
+                # ipdb.set_trace()
+                if target_idx <5: # test data is too short to predict
+                    deleted_test_data_num += 1
+                    continue
+                if self.opt['main_task']=="X":
+                    test_data.append([res_2[:target_idx], 0, res[1][target_idx][0], res[0]])
+                elif self.opt['main_task']=="Y":
+                    test_data.append([res_2[:target_idx], 1, res[1][target_idx][0], res[0]])
+                # if res[1][-1][0] >= self.opt["source_item_num"]: # denoted the corresponding validation/test entry , 若為y domain的item_id
+                #     test_data.append([res_2, 1, res[1][-1][0], res[0]]) #[整個test sequence, 1, 最後一個item_id, gender]
+                # else :
+                #     test_data.append([res_2, 0, res[1][-1][0], res[0]])
+        print("Number of deleted test data:",deleted_test_data_num)
         return test_data
     
     def subtract_min(self,ts):
@@ -642,15 +699,18 @@ class DataLoader(DataLoader):
             else:
                 processed.append([seq, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, x_last, y_last, d[1],
                                   d[2], negative_sample, masked_xd, neg_xd, masked_yd, neg_yd, index, gender, x_last_3,y_last_3])
-        print("Number of test/valid sequence detected:",count)
+        if self.eval==2:
+            print("Number of valid sequence deleted after preprocess:",count)
+            print("Number of valid male:",len([tmp for tmp in processed if tmp[-3][0]==1]))
+            print("Number of valid female:",len([tmp for tmp in processed if tmp[-3][0]==0]))
+        else:
+            print("Number of test sequence deleted after preprocess:",count)
+            print("Number of test male:",len([tmp for tmp in processed if tmp[-3][0]==1]))
+            print("Number of test female:",len([tmp for tmp in processed if tmp[-3][0]==0]))
         return processed
 
     def preprocess(self):
 
-        def myprint(a):
-            for i in a:
-                print("%6d" % i, end="")
-            print("")
         """ Preprocess the data and convert to ids. """
         processed = []
         female_delete_num = 0
@@ -962,8 +1022,8 @@ class DataLoader(DataLoader):
             # ipdb.set_trace()
             processed.append([index, d, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, 
                                   share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd, augment_xd, augment_yd, gender])
-        print(f"number of male deleted: {male_delete_num}")
-        print(f"number of female deleted: {female_delete_num}")
+        print(f"number of training male deleted after preprocess: {male_delete_num}")
+        print(f"number of training female deleted after preprocess: {female_delete_num}")
         return processed
     
     def __len__(self):

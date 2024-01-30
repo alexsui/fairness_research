@@ -10,7 +10,7 @@ def run_kmeans(x, opt):
     """
     
     print('performing kmeans clustering')
-    results = {'im2cluster':[],'centroids':[],'density':[]}
+    results = {'im2cluster':[], 'centroids':[], 'density':[]}
     
     for seed, num_cluster in enumerate(opt['num_cluster']):
         # intialize faiss clustering parameters

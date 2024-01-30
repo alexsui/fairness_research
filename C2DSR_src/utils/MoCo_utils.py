@@ -84,3 +84,19 @@ def compute_embedding_for_female_mixed_user(opt, all_data, model, name):
         pooling_features = pooling_features.cuda()
         features = features.cuda()
     return pooling_features, features
+def compute_features_for_I2C(opt, dataloader, model):
+    model.eval()
+    max_id = max([k[0] for k in dataloader.all_data])
+    features = torch.zeros(max_id+1, opt["hidden_units"]).cuda()
+    gender = torch.full((max_id+1,), 2)
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            index = batch[0]
+            mixed_seq = batch[1] # no augmentation- cross domain sequence
+            ts = batch[7] if opt['time_encode'] else None
+            # ipdb.set_trace()
+            mixed_seq = mixed_seq.cuda() if opt['cuda'] else mixed_seq
+            feat = get_embedding_for_ssl(opt, mixed_seq, model.encoder, model.item_emb, projector=None, encoder_causality_mask = False, ts=ts)
+            features[index] = feat
+            gender[index] = batch[-1][:,0]
+    return features, gender

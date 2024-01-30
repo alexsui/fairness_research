@@ -113,7 +113,7 @@ def main(args):
     #     adj_single = adj_single.cuda()
     if opt["training_mode"] not in ["pretrain","finetune","joint_learn","joint_pretrain","evaluation"]:
         raise ValueError("training mode must be pretrain, finetune, joint_learn or joint_pretrain")
-    if opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL"]:
+    if opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster"]:
         raise ValueError("ssl must be mask_prediction, time_CL, augmentation_based_CL, no_ssl or proto_CL")
     # model
     if opt['training_mode']=="finetune" or opt['training_mode']=="joint_learn"or opt['training_mode']=="evaluation":
@@ -192,7 +192,7 @@ if __name__ == '__main__':
     parser.add_argument('--leakey', type=float, default=0.1)
     parser.add_argument('--maxlen', type=int, default=50)
     parser.add_argument('--cpu', action='store_true', help='Ignore CUDA.')
-    parser.add_argument('--cuda', type=bool, default=torch.cuda.is_available(), help='Enables CUDA training.')
+    parser.add_argument('--cuda', type=bool, default=torch.cuda.is_available(), help='Enables CUDA training.') #
     parser.add_argument('--lambda', type=float, default=0.7)       
 
     # train part
@@ -256,6 +256,8 @@ if __name__ == '__main__':
     parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
     parser.add_argument('--generator_model',type=str,default= "X" ,help="generator model")
     parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment or not")
+
+    parser.add_argument('--topk_cluster',type=str,default= 5 ,help="number of multi-view cluster")
 
     args = parser.parse_args()
     

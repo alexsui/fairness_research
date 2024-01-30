@@ -16,7 +16,7 @@ from utils import torch_utils
 from model.C2DSR import C2DSR
 from model.MoCo import MoCo
 from model.NNCL import NNCL
-from utils.MoCo_utils import compute_features, compute_embedding_for_target_user
+from utils.MoCo_utils import compute_features, compute_embedding_for_target_user,compute_features_for_I2C
 from utils.cluster import run_kmeans
 from utils.time_transformation import TimeTransformation
 from scipy.spatial import distance
@@ -670,16 +670,30 @@ class CDSRTrainer(Trainer):
         self.MoCo_Y = MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "Y")
         self.MoCo_mixed =MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "mixed")
         self.NNCL = NNCL(opt,self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'])
+        ###adversarial learning###
+        self.gender_discriminator = GenderDiscriminator(self.opt)
+        self.gender_discriminator_pretrained =False
+        self.lambda_ = 0.1
+        
+        ###Istance to cluster Contrastive Learning###
+        if self.opt['ssl'] == 'interest_cluster':
+            # self.male_cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][0], topk = opt['topk_cluster'])
+            # self.female_cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][1], topk = opt['topk_cluster'])
+            self.cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][2], topk = opt['topk_cluster'])
         if opt['cuda']:
-            self.model.cuda()
-            self.BCE_criterion.cuda()
-            self.CS_criterion.cuda()
-            self.CL_criterion.cuda()
-            self.MoCo_X.cuda()
-            self.MoCo_Y.cuda()
-            self.MoCo_mixed.cuda()
-            self.NNCL.cuda()
-            self.proto_criterion.cuda()
+            self.model = self.model.cuda()
+            self.BCE_criterion = self.BCE_criterion.cuda()
+            self.CS_criterion = self.CS_criterion.cuda()
+            self.CL_criterion = self.CL_criterion.cuda()
+            self.proto_criterion = self.proto_criterion.cuda()
+            self.MoCo_X = self.MoCo_X.cuda()
+            self.MoCo_Y = self.MoCo_Y.cuda()
+            self.MoCo_mixed = self.MoCo_mixed.cuda()
+            self.NNCL = self.NNCL.cuda()
+            self.gender_discriminator = self.gender_discriminator.cuda()
+            # self.male_cluster = self.male_cluster.cuda()
+            # self.female_cluster = self.female_cluster.cuda()
+            self.cluster = self.cluster.cuda()
         if self.opt['param_group'] : 
             param_name = []
             for name, param in self.model.named_parameters():
@@ -693,7 +707,13 @@ class CDSRTrainer(Trainer):
                                                         {'params': group2, 'lr': opt['lr']*0.01}],
                                                     opt['lr'])
         else:
-            self.optimizer = torch_utils.get_optimizer(opt['optim'], self.model.parameters(), opt['lr'])
+            if self.opt['training_mode'] == 'joint_learn' and self.opt['ssl'] == 'interest_cluster': 
+                # self.optimizer = torch_utils.get_optimizer(opt['optim'], list(self.model.parameters())+list(self.male_cluster.parameters())+list(self.female_cluster.parameters()), opt['lr'])
+                self.optimizer = torch_utils.get_optimizer(opt['optim'], list(self.model.parameters())+list(self.cluster.parameters()), opt['lr'])
+
+            else:
+                self.optimizer = torch_utils.get_optimizer(opt['optim'],self.model.parameters(), opt['lr'])
+        self.d_optimizer = torch_utils.get_optimizer(opt['optim'], self.gender_discriminator.parameters(), opt['lr'])
         self.pooling = opt['pooling']
         self.sim = Similarity(opt['temp'])
         
@@ -871,7 +891,7 @@ class CDSRTrainer(Trainer):
         elif domain == "mixed":
             out = self.get_embedding_for_ssl(data = augmented_data, encoder = self.model.encoder, item_embed = self.model.item_emb, CL_projector = self.model.CL_projector, 
                           encoder_causality_mask = False, add_graph_node=True, graph_embedding = self.model.cross_emb)
-           
+        
         out = out.view(batch_size,2,-1)
         z1, z2 = out[:, 0, :], out[:, 1, :]
         cos_sim = self.sim(z1.unsqueeze(1), z2.unsqueeze(0))
@@ -1002,13 +1022,55 @@ class CDSRTrainer(Trainer):
             target_gt_mask = target_gt_mask.cuda()
         
         return augmented_seq_fea, augmented_share_y_ground, augmented_share_y_ground_mask, nonoverlap_feat, target_gt - self.opt['source_item_num'], target_gt_mask
+    def I2C_CL(self, index, mixed_seq, target_seq, ts_d, ts_yd, gender):
+        ts_d = ts_d if self.opt['time_encode'] else None
+        ts_yd = ts_yd if self.opt['time_encode'] else None
+        mixed_feature = get_embedding_for_ssl(self.opt , mixed_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.CL_projector)
+        target_feature = get_embedding_for_ssl(self.opt , target_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.CL_projector_Y)
+        new_cluster, multi_interest = self.cluster(mixed_feature)
+        pos = torch.sum(multi_interest*target_feature,dim=1,keepdim=True)
+        neg = target_feature@new_cluster.T
+        logits = torch.cat([pos,neg],dim=1)
+
+        # gender = gender[:,0]
+        # target_male_seq = target_seq[gender==1]
+        # target_female_seq = target_seq[gender==0]
+        # mixed_male_seq = mixed_seq[gender==1]
+        # mixed_female_seq = mixed_seq[gender==0]
+        # ts_d = ts_d if self.opt['time_encode'] else None
+        # ts_yd = ts_yd if self.opt['time_encode'] else None
+        # mixed_male_feature = get_embedding_for_ssl(self.opt , mixed_male_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.CL_projector)
+        # mixed_female_feature = get_embedding_for_ssl(self.opt , mixed_female_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.CL_projector)
+        # target_male_feature = get_embedding_for_ssl(self.opt , target_male_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.CL_projector_Y)
+        # target_female_feature = get_embedding_for_ssl(self.opt , target_female_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.CL_projector_Y)
+        # new_male_cluster, male_multi_interest = self.male_cluster(mixed_male_feature)
+        # new_female_cluster, female_multi_interest = self.female_cluster(mixed_female_feature)
+        # new_male_cluster =torch.nn.functional.normalize(new_male_cluster, dim=1)
+        # male_multi_interest = torch.nn.functional.normalize(male_multi_interest, dim=1)
+        # new_female_cluster =torch.nn.functional.normalize(new_female_cluster, dim=1)
+        # female_multi_interest = torch.nn.functional.normalize(female_multi_interest, dim=1)
+        # male_pos = torch.sum(male_multi_interest*target_male_feature,dim=1,keepdim=True)
+        # female_pos = torch.sum(female_multi_interest*target_female_feature, dim=1,keepdim=True)
+        # male_neg = target_male_feature@new_male_cluster.T
+        # female_neg  = target_female_feature@new_female_cluster.T
+        # male_logits = torch.cat([male_pos, male_neg],dim=1)
+        # female_logits = torch.cat([female_pos, female_neg],dim=1)
+        # logits = torch.cat([male_logits,female_logits],dim=0)
+        
+        logits = logits/self.opt['temp']
+        labels = torch.zeros(logits.shape[0], dtype=torch.long)
+        if self.opt['cuda']:
+            labels = labels.cuda() 
+        loss = self.CL_criterion(logits, labels)
+        return loss
     def train_batch(self, epoch, batch, i, cluster_result):
         self.model.train()
         self.optimizer.zero_grad()
+        self.d_optimizer.zero_grad()
         self.model.graph_convolution()
         cluster_result_X, cluster_result_Y, cluster_result_cross = cluster_result[0], cluster_result[1], cluster_result[2]
         index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_yd, gender = self.unpack_batch(batch)
-        
+
         if self.opt['training_mode'] =="joint_learn":
             # time_CL
             if self.opt["ssl"]=="time_CL":
@@ -1038,6 +1100,12 @@ class CDSRTrainer(Trainer):
                 pull_loss = self.pull_xy_embedding(seq, x_seq, y_seq)
             if self.opt['ssl'] == "NNCL":
                 NNCL_loss = self.NNCL(x_seq, y_seq)
+            if self.opt['ssl'] == "interest_cluster":
+                if epoch+1>=self.opt['warmup_epoch']:
+                    I2C_loss = self.I2C_CL(index,seq, y_seq,ts_d,ts_yd,gender)
+                    # print(f"\033[34mI2C_loss:{I2C_loss}\033[0m")
+                else:
+                    I2C_loss = torch.Tensor([0]).cuda()
         if self.opt['domain'] =="single":
             seq = None 
             if self.opt['main_task'] == "X":
@@ -1049,7 +1117,8 @@ class CDSRTrainer(Trainer):
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd)
         else: 
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
-
+        
+       
         #取倒數10個
         used = 10
         ground = ground[:,-used:]
@@ -1128,6 +1197,9 @@ class CDSRTrainer(Trainer):
                 elif self.opt['ssl'] == "NNCL":
                     loss = x_share_loss + y_share_loss + x_loss + y_loss + NNCL_loss*0.1
                     self.NNCL_loss += NNCL_loss.item()
+                elif self.opt['ssl'] =="interest_cluster":
+                    loss = y_share_loss + y_loss + I2C_loss
+                    self.I2C_loss += I2C_loss.item()
             else:
                 loss = x_share_loss + y_share_loss + x_loss + y_loss
                 # loss = x_share_loss + x_loss + y_loss
@@ -1137,8 +1209,7 @@ class CDSRTrainer(Trainer):
             self.prediction_loss += (x_share_loss.item() + y_share_loss.item() + x_loss.item() + y_loss.item())
             # self.prediction_loss += (x_share_loss.item() + x_loss.item() + y_loss.item())
             # self.prediction_loss +=  (x_loss.item() + y_loss.item())
-            loss.backward()
-            self.optimizer.step()
+           
         elif self.opt['main_task'] == "X":
             if seqs_fea is not None:
                 share_x_result =  self.model.lin_X(seqs_fea[:,-used:]) # b * seq * X_num
@@ -1182,6 +1253,9 @@ class CDSRTrainer(Trainer):
                 elif self.opt['ssl'] == "NNCL":
                     loss = x_share_loss + x_loss + NNCL_loss
                     self.NNCL_loss += NNCL_loss.item()
+                elif self.opt['ssl'] =="interest_cluster":
+                    loss = y_share_loss + y_loss + I2C_loss
+                    self.I2C_loss += I2C_loss.item()
             else:
                 if seqs_fea is not None:
                     loss = x_share_loss + x_loss
@@ -1189,8 +1263,7 @@ class CDSRTrainer(Trainer):
                 else:
                     loss = x_loss
                     self.prediction_loss += x_loss.item()
-            loss.backward()
-            self.optimizer.step()
+           
         elif self.opt['main_task'] == "Y":
             if seqs_fea is not None:                                  
                 share_y_result =  self.model.lin_Y(seqs_fea[:,-used:]) # b * seq * X_num
@@ -1223,6 +1296,7 @@ class CDSRTrainer(Trainer):
                 y_ground.reshape(-1))  # b * seq
             # weighted_y_loss = y_loss*weight
             y_loss = (y_loss * (y_ground_mask.reshape(-1))).mean()
+            
             if self.opt['training_mode'] =="joint_learn":
                 if self.opt["ssl"]=="time_CL":
                     loss = y_share_loss + y_loss  + time_CL_loss
@@ -1240,6 +1314,9 @@ class CDSRTrainer(Trainer):
                 elif self.opt['ssl'] == "NNCL":
                     loss = y_share_loss + y_loss + NNCL_loss
                     self.NNCL_loss += NNCL_loss.item()
+                elif self.opt['ssl'] =="interest_cluster":
+                    loss = y_share_loss + y_loss + I2C_loss
+                    self.I2C_loss += I2C_loss.item()
             else:
                 if seqs_fea is not None:
                     loss = y_share_loss + y_loss
@@ -1247,11 +1324,63 @@ class CDSRTrainer(Trainer):
                 else:
                     loss = y_loss
                     self.prediction_loss += y_loss.item()
-
-            # self.prediction_loss += y_loss.item()
-            loss.backward()
-            self.optimizer.step()
-        return loss.item()
+                    
+        ### adversarial training for bias free embedding ###
+        dis_loss, adv_loss = None, None
+        if self.gender_discriminator_pretrained:
+            ### update generator ###
+            target = gender[:,0].float()
+            # fake_target = (target.clone()==0).to(int).float()
+            seqs_fea,_ = get_sequence_embedding(self.opt,seq,self.model.encoder,self.model.item_emb, encoder_causality_mask = True)
+            if self.opt['main_task'] == "X":
+                specific_seq_fea,_ = get_sequence_embedding(self.opt,x_seq,self.model.encoder_X,self.model.item_emb_X, encoder_causality_mask = True)
+            elif self.opt['main_task'] == "Y":
+                specific_seq_fea,_ = get_sequence_embedding(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = True)
+            pred = self.gender_discriminator(seqs_fea + specific_seq_fea).squeeze()
+            adv_loss = self.BCE_criterion(pred, target)
+            # adv_loss.backward()
+            loss = loss - adv_loss
+            # loss = loss - adv_loss*2
+            
+            ###update discriminator###
+            pred = self.gender_discriminator(seqs_fea.detach() + specific_seq_fea.detach()).squeeze()
+            dis_loss = self.BCE_criterion(pred, target)
+            dis_loss.backward()
+            self.d_optimizer.step()
+        loss.backward()
+        self.optimizer.step()
+       
+        # for j,(name, param) in enumerate(self.male_cluster.named_parameters()):
+        #     if param.requires_grad and i==0 and j==0:
+        #         print(name, param.data)
+        return loss.item(), adv_loss.item() if adv_loss else None, dis_loss.item() if dis_loss else None
+    def pretrain_discriminator(self,dataloader):
+        self.gender_discriminator.train()
+        for epoch in range(40):
+            batch_dis_loss = 0
+            batch_dis_acc = 0
+            batch_predict_male_num = 0
+            batch_gt_male_num = 0
+            for i,batch in enumerate(dataloader):  
+                self.d_optimizer.zero_grad()
+                index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_yd, gender = self.unpack_batch(batch)
+                seqs_fea,_ = get_sequence_embedding(self.opt,seq,self.model.encoder,self.model.item_emb, encoder_causality_mask = True)
+                y_seqs_fea,_ = get_sequence_embedding(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = True)
+                pred = self.gender_discriminator(seqs_fea + y_seqs_fea).squeeze()
+                dis_loss = self.BCE_criterion(pred,gender[:,0].float())
+                acc = (torch.round(pred)== gender[:,0]).sum()/len(pred)
+                dis_loss.backward()
+                self.d_optimizer.step()
+                batch_dis_loss += dis_loss.item()
+                batch_dis_acc += acc.item()
+                batch_predict_male_num += (torch.round(pred)==1).sum().item()
+                batch_gt_male_num += gender[:,0].sum().item()
+            print("-"*20)
+            print(f"Epoch {epoch+1} discriminator pretrain loss:",batch_dis_loss/len(dataloader))
+            print(f"Epoch {epoch+1} discriminator accuracy:",batch_dis_acc/len(dataloader))
+            print(f"Number of real male:",batch_gt_male_num/len(dataloader))
+            print(f"Number of predicted male:",batch_predict_male_num/len(dataloader))
+            print("-"*20)
     def train(self, epoch, train_dataloader, valid_dataloader, mixed_test_dataloader, file_logger):
         global_step = 0
         
@@ -1273,10 +1402,7 @@ class CDSRTrainer(Trainer):
         train_in_domain_CL_loss = []
         val_pred_loss_X = []
         val_pred_loss_Y = []
-        # start training
-        # for non-overlap data augmentation
-        # nonoverlap_dataLoader = NonoverlapDataLoader(self.opt['data_dir'], self.opt['batch_size'],  self.opt)
-        # overlap_dataLoader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, -1)
+       
         for epoch in range(1, self.opt['num_epoch'] + 1):
             train_loss = 0
             epoch_start_time = time.time()
@@ -1287,9 +1413,17 @@ class CDSRTrainer(Trainer):
             self.prediction_loss = 0
             self.pull_loss = 0
             self.NNCL_loss = 0
+            self.adv_loss = 0
+            self.dis_loss = 0
+            self.I2C_loss = 0
             cluster_result_X = None
             cluster_result_Y = None
             cluster_result_cross = None
+            ### adversairal learning : discriminator pretrain ###
+            # if epoch ==15:
+            #     self.pretrain_discriminator(train_dataloader)
+            #     self.gender_discriminator_pretrained = True
+            
             if self.opt['ssl'] == "proto_CL" and self.opt['training_mode'] == "joint_learn":
                 if epoch+1>=self.opt['warmup_epoch']:
                     # x_domain
@@ -1308,26 +1442,32 @@ class CDSRTrainer(Trainer):
                         features_cross[torch.norm(features_cross,dim=1)>1.5] /= 2 
                         features_cross = features_cross.numpy()
                         cluster_result_cross = run_kmeans(features_cross, self.opt)
-                        
-            # item-generation augmentation
+            
+            ### item-generation & user augmentation ###
             if self.opt['data_augmentation']=="item_augmentation":
                 train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator)
             if self.opt['data_augmentation']=="user_generation" and epoch > 10:
                 train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = None, model = self.model)
+            
             for i,batch in enumerate(train_dataloader):
+                # print("batch:",i)
                 global_step += 1
-                loss = self.train_batch(epoch, batch, i, cluster_result = (cluster_result_X, cluster_result_Y, cluster_result_cross))
-                train_loss += loss
-                
+                loss, adv_loss, dis_loss = self.train_batch(epoch, batch, i, cluster_result = (cluster_result_X, cluster_result_Y, cluster_result_cross))
+                self.dis_loss += dis_loss if dis_loss else 0
+                self.adv_loss += adv_loss if adv_loss else 0
+                train_loss+=loss
             duration = time.time() - epoch_start_time
             print(format_str.format(datetime.now(), global_step, max_steps, epoch, \
                                             self.opt['num_epoch'], train_loss/num_batch, duration, current_lr))
             print("mi:", self.mi_loss/num_batch)
+            print("Adversarial loss:", self.adv_loss/num_batch)
+            print("discrimination loss:", self.dis_loss/num_batch)
             print("time_CL_loss:", self.time_CL_loss/num_batch)
             print("augmentation_based_CL_loss:", self.augmentation_based_CL_loss/num_batch)
             print("proto_CL_loss:", self.proto_CL_loss/num_batch)
             print("pull_loss:", self.pull_loss/num_batch)
             print("NNCL_loss:", self.NNCL_loss/num_batch)
+            print("I2C_loss:", self.I2C_loss/num_batch)
             train_in_domain_CL_loss.append(self.proto_CL_loss/num_batch)
             train_pred_loss.append(self.prediction_loss/num_batch)
             
@@ -1472,13 +1612,26 @@ class CDSRTrainer(Trainer):
             val_loss_X += batch_loss_X
             val_loss_Y += batch_loss_Y
         return X_pred, Y_pred, val_loss_X / len(evaluation_batch), val_loss_Y / len(evaluation_batch)    
-    def get_predict_item_for_test(self, evaluation_batch):
+    def get_fairness_metric_for_test(self, evaluation_batch):
         with open(f"./fairness_dataset/Movie_lens_time/{self.opt['data_dir']}/item_IF.json","r") as f:
             item_if = json.load(f)
+        all_DIF = 0
+        c =0
+        # DP
         X_pred_female = []
         X_pred_male = []
         Y_pred_female = []
         Y_pred_male = []
+        # EO
+        EO_X_pred_female = []
+        EO_Y_pred_female = []
+        EO_X_pred_male = []
+        EO_Y_pred_male = []
+        
+        X_pred_female_num =0
+        X_pred_male_num =0
+        Y_pred_female_num =0
+        Y_pred_male_num =0
         
         for i, batch in enumerate(evaluation_batch):
             
@@ -1510,15 +1663,20 @@ class CDSRTrainer(Trainer):
                         gt_item_id = [x_seq[id][i].item() for i in x_last_3[id]]
                         gt_IF = [item_if[str(d)] for d in gt_item_id if str(d) in list(item_if.keys())]
                         DIF = np.sum(predicted_IF) - np.sum(gt_IF)
+                        all_DIF += DIF
+                        c+=1
                     except:
                         print("Something wrong with IF!")
                         ipdb.set_trace()
                     if sex[0]==0:
+                        X_pred_female_num+=1
                         X_pred_female+=topk_item.tolist()
+                        EO_X_pred_female+=[item for item in topk_item.tolist()if item in x_seq[id]] 
                     elif sex[0]==1:
+                        X_pred_male_num +=1
                         X_pred_male+=topk_item.tolist()
+                        EO_X_pred_male+=[item for item in topk_item.tolist()if item in x_seq[id]] 
                 else :
-                    # share_fea = seqs_fea[id, -1]
                     specific_fea = y_seqs_fea[id, Y_last[id]]
                     if seqs_fea is not None:
                         share_fea = seqs_fea[id, -1]
@@ -1531,55 +1689,97 @@ class CDSRTrainer(Trainer):
                         gt_item_id = [y_seq[id][i].item() for i in y_last_3[id]]
                         gt_IF = [item_if[str(d)] for d in gt_item_id if str(d) in list(item_if.keys())]
                         DIF = np.sum(predicted_IF) - np.sum(gt_IF)
+                        all_DIF+=DIF
+                        c+=1
                     except:
                         print("Something wrong with IF!")
                         ipdb.set_trace()
                     if sex[0]==0:
+                        Y_pred_female_num+=1
                         Y_pred_female+=topk_item.tolist()
+                        EO_Y_pred_female+=[item for item in topk_item.tolist() if item in y_seq[id]] 
                     elif sex[0]==1:
+                        Y_pred_male_num+=1
                         Y_pred_male+=topk_item.tolist()
+                        EO_Y_pred_male+=[item for item in topk_item.tolist() if item in y_seq[id]] 
+        avg_DIF = all_DIF / c
+        if self.opt['main_task'] == "X" or self.opt['main_task'] == "dual":
+            X_pred_female = torch.tensor(X_pred_female)
+            X_pred_male = torch.tensor(X_pred_male)
+            EO_X_pred_female = torch.tensor(EO_X_pred_female)
+            EO_X_pred_male = torch.tensor(EO_X_pred_male)
+        if self.opt['main_task'] == "Y" or self.opt['main_task'] == "dual":
+            Y_pred_female = torch.tensor(Y_pred_female)
+            Y_pred_male = torch.tensor(Y_pred_male)
+            EO_Y_pred_female = torch.tensor(EO_Y_pred_female)
+            EO_Y_pred_male = torch.tensor(EO_Y_pred_male)
+        X_DP, X_EO = None, None
+        Y_DP, Y_EO = None, None
         
-        # X_pred_female = torch.tensor(X_pred_female)
-        # X_pred_male = torch.tensor(X_pred_male)
-        # Y_pred_female = torch.tensor(Y_pred_female)
-        # Y_pred_male = torch.tensor(Y_pred_male)
-        
-        # X_pred_female_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
-        # num, count = X_pred_female.unique(return_counts=True)
-        # X_pred_female_dist[num] = count
-        # X_pred_female_dist = X_pred_female_dist.to(torch.float32)
-        # # max_count = X_pred_female_dist.max()
-        # # if max_count > 0:
-        # #     X_pred_female_dist /= max_count
-        
-        # X_pred_male_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
-        # num, count = X_pred_male.unique(return_counts=True)
-        # X_pred_male_dist[num] = count
-        # X_pred_male_dist = X_pred_male_dist.to(torch.float32)
-        # # max_count = X_pred_male_dist.max()
-        # # if max_count > 0:
-        # #     X_pred_male_dist /= max_count
-        
-        # Y_pred_female_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
-        # tmp_num, tmp_count = Y_pred_female.unique(return_counts=True)
-        # Y_pred_female_dist[tmp_num] = tmp_count
+        if self.opt['main_task'] == "X" or self.opt['main_task'] == "dual":
+            #DP calculation    
+            X_pred_female_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
+            num, count = X_pred_female.unique(return_counts=True)
+            X_pred_female_dist[num] = count
+            X_pred_female_dist = X_pred_female_dist.to(torch.float32)/X_pred_female_num
+            # max_count = X_pred_female_dist.max()
+            # if max_count > 0:
+            #     X_pred_female_dist /= max_count
+            
+            X_pred_male_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
+            num, count = X_pred_male.unique(return_counts=True)
+            X_pred_male_dist[num] = count
+            X_pred_male_dist = X_pred_male_dist.to(torch.float32)/X_pred_male_num
+            X_DP = distance.jensenshannon(X_pred_female_dist+1e-12,X_pred_male_dist+1e-12).item() if X_pred_female_dist is not None else None
+            
+            #EO calculation
+            EO_X_pred_female_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
+            num, count = EO_X_pred_female.unique(return_counts=True)
+            EO_X_pred_female_dist[num] = count
+            EO_X_pred_female_dist = EO_X_pred_female_dist.to(torch.float32)/X_pred_female_num
+            EO_X_pred_male_dist= torch.zeros(self.opt['source_item_num'],dtype=torch.int64)
+            num, count = EO_X_pred_male.unique(return_counts=True)
+            EO_X_pred_male_dist[num] = count
+            EO_X_pred_male_dist = EO_X_pred_male_dist.to(torch.float32)/X_pred_male_num
+            X_EO = distance.jensenshannon(EO_X_pred_female_dist+1e-12,EO_X_pred_male_dist+1e-12).item() 
+        elif self.opt['main_task'] == "Y" or self.opt['main_task'] == "dual":
+            #DP calculation
+            Y_pred_female_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
+            tmp_num, tmp_count = Y_pred_female.unique(return_counts=True)
+            Y_pred_female_dist[tmp_num] = tmp_count
+            Y_pred_female_dist = Y_pred_female_dist.to(torch.float32)/Y_pred_female_num
+            Y_pred_male_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
+            num, count = Y_pred_male.unique(return_counts=True)
+            Y_pred_male_dist[num] = count
+            Y_pred_male_dist = Y_pred_male_dist.to(torch.float32)/Y_pred_male_num
+            Y_DP = distance.jensenshannon(Y_pred_female_dist+1e-12, Y_pred_male_dist+1e-12).item() 
+            #EO calculation
+            # try:
+            EO_Y_pred_female_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
+            num, count = EO_Y_pred_female.unique(return_counts=True)
+            if num.tolist():
+                EO_Y_pred_female_dist[num] = count
+                EO_Y_pred_female_dist = EO_Y_pred_female_dist.to(torch.float32)/Y_pred_female_num
+            EO_Y_pred_male_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
+            num, count = EO_Y_pred_male.unique(return_counts=True)
+            if num.tolist():
+                EO_Y_pred_male_dist[num] = count
+                EO_Y_pred_male_dist = EO_Y_pred_male_dist.to(torch.float32)/Y_pred_male_num
+                Y_EO = distance.jensenshannon(EO_Y_pred_female_dist+1e-12, EO_Y_pred_male_dist+1e-12).item() if Y_pred_female_dist is not None else None
+                    
+            # except:
+            #     ipdb.set_trace()
+            #     pass
 
-        # Y_pred_female_dist = Y_pred_female_dist.to(torch.float32)
-        # # max_count = Y_pred_female_dist.max()
-        # # if max_count > 0:
-        # #     Y_pred_female_dist /= max_count
-       
         
-        # Y_pred_male_dist= torch.zeros(self.opt['target_item_num'],dtype=torch.int64)
-        # num, count = Y_pred_male.unique(return_counts=True)
-        # Y_pred_male_dist[num] = count
-        # Y_pred_male_dist = Y_pred_male_dist.to(torch.float32)
-        # # max_count = Y_pred_male_dist.max()
-        # # if max_count > 0:
-        # #     Y_pred_male_dist /= max_count
-        
+        print("number of X tested male:",X_pred_male_num)
+        print("number of X tested female:",X_pred_female_num)
+        print("number of Y tested male:",Y_pred_male_num)
+        print("number of Y tested female:",Y_pred_female_num)
+        print("number of total tested user:",Y_pred_male_num+Y_pred_female_num)
+        print("number of test data:",Y_pred_male_num+Y_pred_female_num)
         # return distance.jensenshannon(X_pred_female_dist+1e-12,X_pred_male_dist+1e-12).item() ,distance.jensenshannon(Y_pred_female_dist+1e-12,Y_pred_male_dist+1e-12).item()
-        return DIF
+        return avg_DIF, X_DP, Y_DP, X_EO, Y_EO
     def test_batch(self, batch, mode):
         if mode == "valid":
             index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, X_last, Y_last, XorY, ground_truth, neg_list, masked_xd, neg_xd, masked_yd, neg_yd, gender = self.unpack_batch_valid(batch)
@@ -1660,7 +1860,7 @@ class CDSRTrainer(Trainer):
             test_X_MRR_female, test_X_NDCG_5_female, test_X_NDCG_10_female, test_X_HR_1_female, test_X_HR_5_female, test_X_HR_10_female = self.cal_test_score(test_X_pred_female)
             test_Y_MRR_male, test_Y_NDCG_5_male, test_Y_NDCG_10_male, test_Y_HR_1_male, test_Y_HR_5_male, test_Y_HR_10_male = self.cal_test_score(test_Y_pred_male)
             test_Y_MRR_female, test_Y_NDCG_5_female, test_Y_NDCG_10_female, test_Y_HR_1_female, test_Y_HR_5_female, test_Y_HR_10_female = self.cal_test_score(test_Y_pred_female)
-            DIF = self.get_predict_item_for_test(test_dataloader)
+            DIF, X_DP, Y_DP, X_EO, Y_EO = self.get_fairness_metric_for_test(test_dataloader)
             # result_str = 'Epoch {}: \n'.format(epoch) 
             result_str =""
             print("")
@@ -1668,7 +1868,7 @@ class CDSRTrainer(Trainer):
             best_X_test = [test_X_MRR, test_X_NDCG_10, test_X_HR_10]
             best_X_test_male = [test_X_MRR_male, test_X_NDCG_10_male, test_X_HR_10_male]
             best_X_test_female = [test_X_MRR_female, test_X_NDCG_10_female, test_X_HR_10_female]
-            result_str += str({"DIF":DIF}) + "\n" 
+            result_str += str({"DIF":DIF, "X_DP":X_DP, "Y_DP":Y_DP, "X_EO":X_EO, "Y_EO":Y_EO}) + "\n" 
             # result_str+=str({"JS_divergence_X":js_X})+"\n"
             # result_str+=str({"JS_divergence_Y":js_Y})+"\n"
             result_str += str({"Best X domain":[test_X_MRR, test_X_NDCG_10, test_X_HR_10]})+"\n"
