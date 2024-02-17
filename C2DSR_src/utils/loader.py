@@ -116,7 +116,7 @@ class DataLoader(DataLoader):
                 cur = 0
                 selected_idx = [cur]
                 for idx in topk_idx:
-                    i = random.randint(0, 3)
+                    i = random.randint(0, 2)
                     selected_idx.append(idx[cur,i].item())
                     cur = idx[cur,i].item()
                 item_seq = item_seq[selected_idx, torch.arange(item_seq.size(-1))] 

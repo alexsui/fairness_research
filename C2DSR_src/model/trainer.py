@@ -23,6 +23,7 @@ from scipy.spatial import distance
 from model.C2DSR import *
 from utils.loader import DataLoader,NonoverlapDataLoader
 from utils.torch_utils import *
+from utils.collator import CLDataCollator
 class Similarity(nn.Module):
     """
     Dot product or cosine similarity
@@ -155,7 +156,7 @@ class Trainer(object):
             masked_yd = inputs[24]
             neg_yd = inputs[25]
             augmented_xd = inputs[26]
-            augmented_yd = inputs[27]
+            augmented_d = inputs[27]
             gender = inputs[28]
         else:
             inputs = [Variable(b) for b in batch]
@@ -186,9 +187,9 @@ class Trainer(object):
             masked_yd = inputs[24]
             neg_yd = inputs[25]
             augmented_xd = inputs[26]
-            augmented_yd = inputs[27]
+            augmented_d = inputs[27]
             gender = inputs[28]
-        return index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,  augmented_xd, augmented_yd,gender
+        return index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,  augmented_xd, augmented_d,gender
     def unpack_batch_for_gen(self, batch):
         if self.opt["cuda"]:
             inputs = [Variable(b.cuda()) for b in batch]
@@ -399,7 +400,7 @@ class Pretrainer(Trainer):
         self.model.train()
         self.optimizer.zero_grad()
         cluster_result_X, cluster_result_Y, cluster_result_cross = cluster_result[0], cluster_result[1], cluster_result[2]
-        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_yd,gender = self.unpack_batch(batch)
+        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_d,gender = self.unpack_batch(batch)
         
         
         ssl_loss = torch.tensor(0, dtype = torch.float32).cuda()
@@ -660,7 +661,9 @@ class CDSRTrainer(Trainer):
         self.prediction_loss = 0
         self.pull_loss = 0
         self.NNCL_loss = 0
-        self.BCE_criterion = nn.BCEWithLogitsLoss()
+        self.group_CL_loss = 0
+        self.I2C_loss = 0
+        self.BCE_criterion = nn.BCELoss(reduction='none')
         self.CS_criterion = nn.CrossEntropyLoss(reduction='none')
         self.CL_criterion = nn.CrossEntropyLoss()
         self.proto_criterion = nn.CrossEntropyLoss()
@@ -693,7 +696,8 @@ class CDSRTrainer(Trainer):
             self.gender_discriminator = self.gender_discriminator.cuda()
             # self.male_cluster = self.male_cluster.cuda()
             # self.female_cluster = self.female_cluster.cuda()
-            self.cluster = self.cluster.cuda()
+            if self.opt['ssl'] == 'interest_cluster':
+                self.cluster = self.cluster.cuda()
         if self.opt['param_group'] : 
             param_name = []
             for name, param in self.model.named_parameters():
@@ -876,6 +880,7 @@ class CDSRTrainer(Trainer):
             
         out = CL_projector(out)
         return out
+
     def augmentation_based_CL(self, augmented_data, domain = "X"):
         # print(f"domain {domain}:",augmented_data[0][0],augmented_data[0][1])
         batch_size  = augmented_data.shape[0]
@@ -898,6 +903,7 @@ class CDSRTrainer(Trainer):
         labels = torch.arange(cos_sim.size(0)).long().to(cos_sim.device)
         cl_loss = self.CL_criterion(cos_sim, labels)
         return cl_loss
+        
     def MoCo_train(self, MoCo_model, augmented_seq, cluster_result = None, index = None, task = "in-domain",ts =None):
         if self.opt['augment_type'] == "dropout":
             logits, labels, proto_logits, proto_labels,_,_ = MoCo_model(seq_q = augmented_seq, seq_k=augmented_seq, is_eval=False, cluster_result= cluster_result, index=index, task=task,ts = ts)
@@ -1022,11 +1028,48 @@ class CDSRTrainer(Trainer):
             target_gt_mask = target_gt_mask.cuda()
         
         return augmented_seq_fea, augmented_share_y_ground, augmented_share_y_ground_mask, nonoverlap_feat, target_gt - self.opt['source_item_num'], target_gt_mask
+    def mask_correlated_samples(self, batch_size):
+        N =batch_size*2
+        mask = torch.ones((N, N), dtype=bool)
+        mask = mask.fill_diagonal_(0)
+        for  i in range(batch_size):
+            mask[i,i+batch_size] = 0
+            mask[i+batch_size,i] = 0
+        return mask
+    def group_CL(self, seq, domain = "mixed"):
+        seq = seq.reshape(-1,seq.size(-1))
+        out = get_embedding_for_ssl(self.opt, seq, self.model.encoder, self.model.item_emb, projector = self.model.CL_projector)
+        z1,z2 = out[:len(out)//2,:], out[len(out)//2:,:]
+        batch_size = z1.size(0)
+        N = batch_size*2
+        z = torch.cat([z1,z2],dim=0)
+        sim = torch.mm(z, z.T)/self.opt['temp']
+        pos = torch.cat([torch.diag(sim, z1.size(0)), torch.diag(sim, -z1.size(0))])
+        
+        if batch_size != self.opt['batch_size']:
+            mask = self.mask_correlated_samples(batch_size)
+        else:
+            mask = self.mask_correlated_samples(self.opt['batch_size'])
+        neg = sim[mask].reshape(batch_size*2,-1)
+        labels = torch.zeros(N).to(pos.device).long()
+        logits = torch.cat([pos.unsqueeze(1), neg], dim=1)
+        loss = self.CL_criterion(logits, labels)
+        return loss
+        # seq_len = seq[seq!=self.opt["source_item_num"] + self.opt["target_item_num"]].sum(dim=1)
+        # mask = seq!=0
+        # cumulative_sum = mask.cumsum(dim=1)
+        # first_non_zero_mask = (cumulative_sum == 1) & mask
+        # idx = first_non_zero_mask.nonzero()
+        # pred, weight = self.gender_discriminator(out)
+        # pred, weight = pred.squeeze(), weight.squeeze()
+        # pred_female_seq = seq[torch.round(pred)==0]
+        # sorted_idx = weight.argsort(dim=1)[:,-10:] #ascending order
+        # pred_female_seq[torch.arange(len(pred_female_seq))[:, None], sorted_idx]
     def I2C_CL(self, index, mixed_seq, target_seq, ts_d, ts_yd, gender):
         ts_d = ts_d if self.opt['time_encode'] else None
         ts_yd = ts_yd if self.opt['time_encode'] else None
-        mixed_feature = get_embedding_for_ssl(self.opt , mixed_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.CL_projector)
-        target_feature = get_embedding_for_ssl(self.opt , target_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.CL_projector_Y)
+        mixed_feature = get_embedding_for_ssl(self.opt , mixed_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
+        target_feature = get_embedding_for_ssl(self.opt , target_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
         new_cluster, multi_interest = self.cluster(mixed_feature)
         pos = torch.sum(multi_interest*target_feature,dim=1,keepdim=True)
         neg = target_feature@new_cluster.T
@@ -1039,10 +1082,10 @@ class CDSRTrainer(Trainer):
         # mixed_female_seq = mixed_seq[gender==0]
         # ts_d = ts_d if self.opt['time_encode'] else None
         # ts_yd = ts_yd if self.opt['time_encode'] else None
-        # mixed_male_feature = get_embedding_for_ssl(self.opt , mixed_male_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.CL_projector)
-        # mixed_female_feature = get_embedding_for_ssl(self.opt , mixed_female_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.CL_projector)
-        # target_male_feature = get_embedding_for_ssl(self.opt , target_male_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.CL_projector_Y)
-        # target_female_feature = get_embedding_for_ssl(self.opt , target_female_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.CL_projector_Y)
+        # mixed_male_feature = get_embedding_for_ssl(self.opt , mixed_male_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
+        # mixed_female_feature = get_embedding_for_ssl(self.opt , mixed_female_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
+        # target_male_feature = get_embedding_for_ssl(self.opt , target_male_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
+        # target_female_feature = get_embedding_for_ssl(self.opt , target_female_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
         # new_male_cluster, male_multi_interest = self.male_cluster(mixed_male_feature)
         # new_female_cluster, female_multi_interest = self.female_cluster(mixed_female_feature)
         # new_male_cluster =torch.nn.functional.normalize(new_male_cluster, dim=1)
@@ -1069,8 +1112,7 @@ class CDSRTrainer(Trainer):
         self.d_optimizer.zero_grad()
         self.model.graph_convolution()
         cluster_result_X, cluster_result_Y, cluster_result_cross = cluster_result[0], cluster_result[1], cluster_result[2]
-        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_yd, gender = self.unpack_batch(batch)
-
+        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_d, gender = self.unpack_batch(batch)
         if self.opt['training_mode'] =="joint_learn":
             # time_CL
             if self.opt["ssl"]=="time_CL":
@@ -1087,7 +1129,7 @@ class CDSRTrainer(Trainer):
             if self.opt["ssl"]=="proto_CL":
                 # MoCo_loss_xd = self.MoCo_train(self.MoCo_X, augmented_xd, cluster_result = cluster_result_X, index=index, task = "in-domain", ts = ts_xd)
                 # MoCo_loss_yd = self.MoCo_train(self.MoCo_Y, augmented_yd, cluster_result = cluster_result_Y, index=index, task = "in-domain", ts = ts_yd)
-                # MoCo_loss_mixed = self.MoCo_train(epoch,self.MoCo_mixed, augmented_d, cluster_result = None, index=index, task = "in-domain")
+                MoCo_loss_mixed = self.MoCo_train(epoch,self.MoCo_mixed, seq, cluster_result = None, index=index, task = "in-domain")
 
                 if cluster_result_cross is not None:
                     MoCo_loss_xd_cross = self.MoCo_train(self.MoCo_X, augmented_xd, cluster_result = cluster_result_cross, index=None, task = "cross-domain")
@@ -1106,6 +1148,8 @@ class CDSRTrainer(Trainer):
                     # print(f"\033[34mI2C_loss:{I2C_loss}\033[0m")
                 else:
                     I2C_loss = torch.Tensor([0]).cuda()
+            if self.opt['ssl'] == "group_CL":
+                group_CL_loss = self.group_CL(augmented_d, domain = "mixed")
         if self.opt['domain'] =="single":
             seq = None 
             if self.opt['main_task'] == "X":
@@ -1200,6 +1244,9 @@ class CDSRTrainer(Trainer):
                 elif self.opt['ssl'] =="interest_cluster":
                     loss = y_share_loss + y_loss + I2C_loss
                     self.I2C_loss += I2C_loss.item()
+                elif self.opt['ssl'] =="group_CL":
+                    loss = x_share_loss + y_share_loss + x_loss + y_loss + group_CL_loss
+                    self.group_CL_loss += group_CL_loss.item()
             else:
                 loss = x_share_loss + y_share_loss + x_loss + y_loss
                 # loss = x_share_loss + x_loss + y_loss
@@ -1256,6 +1303,9 @@ class CDSRTrainer(Trainer):
                 elif self.opt['ssl'] =="interest_cluster":
                     loss = y_share_loss + y_loss + I2C_loss
                     self.I2C_loss += I2C_loss.item()
+                elif self.opt['ssl'] =="group_CL":
+                    loss = x_share_loss + x_loss + group_CL_loss
+                    self.group_CL_loss += group_CL_loss.item()
             else:
                 if seqs_fea is not None:
                     loss = x_share_loss + x_loss
@@ -1317,6 +1367,9 @@ class CDSRTrainer(Trainer):
                 elif self.opt['ssl'] =="interest_cluster":
                     loss = y_share_loss + y_loss + I2C_loss
                     self.I2C_loss += I2C_loss.item()
+                elif self.opt['ssl'] =="group_CL":
+                    loss = y_share_loss + y_loss + group_CL_loss
+                    self.group_CL_loss += group_CL_loss.item()
             else:
                 if seqs_fea is not None:
                     loss = y_share_loss + y_loss
@@ -1356,21 +1409,37 @@ class CDSRTrainer(Trainer):
         return loss.item(), adv_loss.item() if adv_loss else None, dis_loss.item() if dis_loss else None
     def pretrain_discriminator(self,dataloader):
         self.gender_discriminator.train()
-        for epoch in range(40):
+        for epoch in range(30):
             batch_dis_loss = 0
             batch_dis_acc = 0
             batch_predict_male_num = 0
             batch_gt_male_num = 0
+            # dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = None, model = self.model)
             for i,batch in enumerate(dataloader):  
                 self.d_optimizer.zero_grad()
-                index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_yd, gender = self.unpack_batch(batch)
-                seqs_fea,_ = get_sequence_embedding(self.opt,seq,self.model.encoder,self.model.item_emb, encoder_causality_mask = True)
-                y_seqs_fea,_ = get_sequence_embedding(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = True)
-                pred = self.gender_discriminator(seqs_fea + y_seqs_fea).squeeze()
+                index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_d, gender = self.unpack_batch(batch)
+                # seqs_fea,_ = get_sequence_embedding(self.opt,seq,self.model.encoder,self.model.item_emb, encoder_causality_mask = True)
+                # y_seqs_fea,_ = get_sequence_embedding(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = True)
+                # pred = self.gender_discriminator(seqs_fea + y_seqs_fea).squeeze()
+                seqs_fea = get_item_embedding_for_sequence(self.opt,seq,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
+                # y_seqs_fea = get_item_embedding_for_sequence(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = False,cl =False)
+                pred, _ = self.gender_discriminator(seqs_fea)
+                pred = pred.squeeze()
+                weight = []    
+                for g in gender:
+                    g = g[0]
+                    if g==0:
+                        weight.append(3)
+                    else:
+                        weight.append(1)
+                weight = torch.tensor(weight).cuda() if self.opt['cuda'] else torch.tensor(weight)
+                weight = weight.float().unsqueeze(-1)
                 dis_loss = self.BCE_criterion(pred,gender[:,0].float())
-                acc = (torch.round(pred)== gender[:,0]).sum()/len(pred)
+                dis_loss = (dis_loss*weight).sum()/weight.sum()
+                
                 dis_loss.backward()
                 self.d_optimizer.step()
+                acc = (torch.round(pred)== gender[:,0]).sum()/len(pred)
                 batch_dis_loss += dis_loss.item()
                 batch_dis_acc += acc.item()
                 batch_predict_male_num += (torch.round(pred)==1).sum().item()
@@ -1402,7 +1471,10 @@ class CDSRTrainer(Trainer):
         train_in_domain_CL_loss = []
         val_pred_loss_X = []
         val_pred_loss_Y = []
-       
+        if self.opt['ssl']=="group_CL" and self.opt['training_mode'] == "joint_learn" and self.opt['substitute_mode']=="attention_weight":
+            self.pretrain_discriminator(train_dataloader)
+            collator = CLDataCollator(self.opt,-1, self.generator[2],self.gender_discriminator,self.model)
+            train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None)
         for epoch in range(1, self.opt['num_epoch'] + 1):
             train_loss = 0
             epoch_start_time = time.time()
@@ -1415,39 +1487,43 @@ class CDSRTrainer(Trainer):
             self.NNCL_loss = 0
             self.adv_loss = 0
             self.dis_loss = 0
+            self.group_CL_loss = 0
             self.I2C_loss = 0
             cluster_result_X = None
             cluster_result_Y = None
             cluster_result_cross = None
-            ### adversairal learning : discriminator pretrain ###
+            ### adversarial  learning : discriminator pretrain ###
             # if epoch ==15:
             #     self.pretrain_discriminator(train_dataloader)
-            #     self.gender_discriminator_pretrained = True
+                # self.gender_discriminator_pretrained = True
             
-            if self.opt['ssl'] == "proto_CL" and self.opt['training_mode'] == "joint_learn":
-                if epoch+1>=self.opt['warmup_epoch']:
-                    # x_domain
-                    # features_X = compute_features(self.opt, train_dataloader, self.MoCo_X, domain = 'X')
-                    # features_X[torch.norm(features_X,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
-                    # features_X = features_X.numpy()
-                    # cluster_result_X = run_kmeans(features_X, self.opt) 
-                    # # y_domain
-                    # features_Y = compute_features(self.opt, train_dataloader, self.MoCo_Y, domain = 'Y')
-                    # features_Y[torch.norm(features_Y,dim=1)>1.5] /= 2 
-                    # features_Y = features_Y.numpy()
-                    # cluster_result_Y = run_kmeans(features_Y, self.opt)
-                    # mixed domain
-                    if self.opt['mixed_included']:
-                        features_cross = compute_features(self.opt, train_dataloader, self.model, domain = 'mixed')
-                        features_cross[torch.norm(features_cross,dim=1)>1.5] /= 2 
-                        features_cross = features_cross.numpy()
-                        cluster_result_cross = run_kmeans(features_cross, self.opt)
+            # if self.opt['ssl'] == "proto_CL" and self.opt['training_mode'] == "joint_learn":
+                # if epoch+1>=self.opt['warmup_epoch']:
+                #     # x_domain
+                #     # features_X = compute_features(self.opt, train_dataloader, self.MoCo_X, domain = 'X')
+                #     # features_X[torch.norm(features_X,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
+                #     # features_X = features_X.numpy()
+                #     # cluster_result_X = run_kmeans(features_X, self.opt) 
+                #     # # y_domain
+                #     # features_Y = compute_features(self.opt, train_dataloader, self.MoCo_Y, domain = 'Y')
+                #     # features_Y[torch.norm(features_Y,dim=1)>1.5] /= 2 
+                #     # features_Y = features_Y.numpy()
+                #     # cluster_result_Y = run_kmeans(features_Y, self.opt)
+                #     # mixed domain
+                #     if self.opt['mixed_included']:
+                #         features_cross = compute_features(self.opt, train_dataloader, self.model, domain = 'mixed')
+                #         features_cross[torch.norm(features_cross,dim=1)>1.5] /= 2 
+                #         features_cross = features_cross.numpy()
+                #         cluster_result_cross = run_kmeans(features_cross, self.opt)
             
             ### item-generation & user augmentation ###
             if self.opt['data_augmentation']=="item_augmentation":
-                train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator)
-            if self.opt['data_augmentation']=="user_generation" and epoch > 10:
-                train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = None, model = self.model)
+                
+                collator = CLDataCollator(self.opt, eval, self.generator[2]) if self.opt['ssl']=="group_CL" else None
+                train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = self.generator)
+            # if self.opt['data_augmentation']=="user_generation" and epoch > 10:
+            #     collator = CLDataCollator(self.opt, eval, self.generator[2]) if self.opt['ssl']=="group_CL" else None
+            #     train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None, model = self.model)
             
             for i,batch in enumerate(train_dataloader):
                 # print("batch:",i)
@@ -1468,6 +1544,7 @@ class CDSRTrainer(Trainer):
             print("pull_loss:", self.pull_loss/num_batch)
             print("NNCL_loss:", self.NNCL_loss/num_batch)
             print("I2C_loss:", self.I2C_loss/num_batch)
+            print("group_CL_loss:", self.group_CL_loss/num_batch)
             train_in_domain_CL_loss.append(self.proto_CL_loss/num_batch)
             train_pred_loss.append(self.prediction_loss/num_batch)
             

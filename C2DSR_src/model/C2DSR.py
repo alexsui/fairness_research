@@ -329,6 +329,11 @@ class C2DSR(torch.nn.Module):
         self.CL_projector_X = CL_Projector(opt)
         self.CL_projector_Y = CL_Projector(opt)
         
+        # for I2C contrastive learning
+        self.interest_projector = CL_Projector(opt)
+        self.interest_projector_X = CL_Projector(opt)
+        self.interest_projector_Y = CL_Projector(opt)
+        
         self.Equivariance_Projector = Equivariance_Projector(opt)
         self.Equivariance_Projector_X = Equivariance_Projector(opt)
         self.Equivariance_Projector_Y = Equivariance_Projector(opt)
@@ -445,16 +450,20 @@ class GenderDiscriminator(nn.Module):
     def __init__(self,opt):
         super(GenderDiscriminator, self).__init__()
         self.opt = opt
+        self.attention=nn.Linear(opt['hidden_units'],1)
         self.layer = nn.Sequential(
-            nn.Linear(opt['hidden_units'], opt['hidden_units']),
+            nn.Linear(opt['hidden_units'], 2*opt['hidden_units']),
             nn.ReLU(),
-            nn.Linear(opt['hidden_units'], opt['hidden_units']),
+            nn.Linear(2*opt['hidden_units'], opt['hidden_units']),
             nn.ReLU(),
             nn.Linear(opt['hidden_units'],1),
             nn.Sigmoid()
         )
     def forward(self, x):
-        return self.layer(x)
+        attention_weights = torch.nn.functional.softmax(self.attention(x), dim=1)
+        weighted_average = torch.sum(x * attention_weights, dim=1)
+        
+        return self.layer(weighted_average), attention_weights
         
 class ClusterRepresentation(nn.Module):
     def __init__(self, opt, feature_dim, num_clusters, topk):#topk most similar cluster

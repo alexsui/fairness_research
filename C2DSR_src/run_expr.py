@@ -140,7 +140,7 @@ parser.add_argument('--pretrain_epoch',type=int,default= 70 ,help="pretrain epoc
 # parser.add_argument('--joint_learn',default= False , action='store_true', help="ssl + main task")
 # parser.add_argument('--joint_pretrain', default= False, action='store_true', help="ssl + two encoder  loss task")
 
-parser.add_argument('--load_pretrain_epoch',type=int,default= None ,help="pretrain epoch")
+parser.add_argument('--load_pretrain_epoch',type=int,default= 20 ,help="pretrain epoch")
 parser.add_argument('--pretrain_model',type=str,default= None ,help="pretrain or not")
 
 parser.add_argument('--time_encode',type=bool,default= False ,help="=time encoding or not")
@@ -164,7 +164,11 @@ parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item t
 
 # nonoverlap user augmentation
 parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment size")
+#interest clustering
 parser.add_argument('--topk_cluster',type=str,default= 5 ,help="number of multi-view cluster")
+#group CL
+parser.add_argument('--substitute_ratio',type=float, default= 0.2 ,help="substitute ratio")
+parser.add_argument('--substitute_mode',type=str, default= "IR" ,help="IR, attention_weight")
 args, unknown = parser.parse_known_args()
 
 modes = [
@@ -178,7 +182,7 @@ modes = [
     # "fairness_baseline_Y_eval","fairness_baseline_Y_single_domain_eval"
     # "fairness_maintaskY_usergen_biasFree_fakelabel_eval","fairness_maintaskY_usergen_biasFree_eval"
     # "fairness_maintaskY_usergen_random_repeat2_eval"
-    "fairness_maintaskY_interest_clusternum200_top10",
+    # "fairness_maintaskY_groupCL_"
     # "fairness_maintaskY_generatorAll_generatenumPoisson_random_20epoch_eval"
     # "fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_eval","fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_unbalance_max7_eval"
     # "fairness_maintaskY_usergen_biasFree_lambda2_eval","fairness_maintaskY_none_biasFree_eval"
@@ -191,11 +195,13 @@ modes = [
 training_mode = "joint_learn"
 domain = "cross"
 main_task = "Y"
-ssl = "interest_cluster"
+ssl = "group_CL"
 data_augmentation = None
 time_encode = False
-topk_clusters = [5, 10]
-num_clusters = ["100,100,100", "200,200,200","300,300,300"]
+substitute_ratios = [0.2,0.4]
+substitute_modes = ["IR"]
+# topk_clusters = [5, 10]
+# num_clusters = ["100,100,100", "200,200,200","300,300,300"]
 folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list]
@@ -208,21 +214,22 @@ print(f"Data: {data_dir}")
 num_seeds = 5
 for data_idx in range(len(data_dir)):
     data_name = data_dir[data_idx]
-    for i, num_cluster in enumerate(num_clusters):
-        for topk_cluster in topk_clusters:
+    for i, ratio in enumerate(substitute_ratios):
+        for mode in substitute_modes:
             for seed in range(1, num_seeds+1):
                 args.training_mode = training_mode
                 args.domain = domain
                 args.main_task = main_task
                 args.time_encode = time_encode
-                args.topk_cluster = topk_cluster
-                args.num_cluster = num_cluster
+                args.substitute_mode = mode
+                args.substitute_ratio = ratio
                 args.data_augmentation = data_augmentation     
                 args.data_dir = data_name
-                # args.evaluation_model = f"fairness_maintaskY_interest_clusternum{num_cluster.split(',')[-1]}_top{topk_cluster}_new_male_female"
-                args.id =  f"fairness_maintaskY_interest_clusternum{num_cluster.split(',')[-1]}_top{topk_cluster}_new_mixed"
+                # args.evaluation_model = f"fairness_maintaskY_groupCL_{mode}_ratio{ratio}"
+                args.id =  f"fairness_maintaskY_groupCL_female{mode}_ratio{ratio}"
                 args.seed = seed
                 args.warmup_epoch = warmup_epoch
+                args.num_cluster = "100,100,100"
                 args.ssl = ssl
                 main(args)
 

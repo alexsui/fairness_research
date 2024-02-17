@@ -172,7 +172,8 @@ def get_embedding_for_ssl(opt , data, encoder, item_embed, projector =None,
                           encoder_causality_mask = False, ts=None):
     batch_size = data.shape[0]
     non_zero_mask = (data != (opt["source_item_num"] +opt["target_item_num"])).long()
-    position_id = non_zero_mask.cumsum(dim=1) * non_zero_mask
+    position_id = non_zero_mask.cumsum(dim=-1) * non_zero_mask
+    # ipdb.set_trace()
     # ipdb.set_trace()
     seqs = item_embed(data)
     feat = encoder(data, seqs, position_id, ts=ts, causality_mask = encoder_causality_mask)
@@ -206,3 +207,15 @@ def get_sequence_embedding(opt, data, encoder, item_embed, projector =None,
     feat = torch.nn.functional.normalize(feat, dim=1)
     seq_feat = torch.nn.functional.normalize(seq_feat, dim=1)
     return seq_feat, feat
+
+def get_item_embedding_for_sequence(opt, data, encoder, item_embed, CL_projector, 
+                        encoder_causality_mask = False, cl =False):
+    batch_size = data.shape[0]
+    device = data.device
+    non_zero_mask = (data != (opt["source_item_num"] +opt["target_item_num"])).long()
+    position_id = non_zero_mask.cumsum(dim=1) * non_zero_mask
+    seqs = item_embed(data)
+    seq_feature = encoder(data, seqs, position_id,  causality_mask = encoder_causality_mask)
+    if cl:
+        seq_feature = CL_projector(seq_feature)
+    return seq_feature

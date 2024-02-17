@@ -61,6 +61,11 @@ def main(args):
 
     print("Loading data from {} with batch size {}...".format(opt['data_dir'], opt['batch_size']))
     
+    if opt["training_mode"] not in ["pretrain","finetune","joint_learn","joint_pretrain","evaluation"]:
+        raise ValueError("training mode must be pretrain, finetune, joint_learn or joint_pretrain")
+    if opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster","group_CL"]:
+        raise ValueError("ssl must be mask_prediction, time_CL, augmentation_based_CL, no_ssl or proto_CL","triple_pull","NNCL","interest_cluster","group_CL")
+    
     # read number of items
     def read_item(fname):
         with codecs.open(fname, "r", encoding="utf-8") as fr:
@@ -72,7 +77,7 @@ def main(args):
     if opt['data_augmentation']!="item_augmentation" and opt['data_augmentation']!="user_generation" and opt['data_augmentation'] is not None:
         raise ValueError("data augmentation must be item_augmentation or user_generation")
     # load item generator
-    if opt['data_augmentation'] == "item_augmentation":
+    if opt['data_augmentation'] == "item_augmentation" or opt['ssl']=="group_CL":
         source_generator = Generator(opt, type='X')
         checkpoint = torch.load(f"./generator_model/{opt['data_dir']}/X/{str(opt['load_pretrain_epoch'])}/model.pt")    
         state_dict = checkpoint['model']
@@ -86,14 +91,18 @@ def main(args):
         state_dict = checkpoint['model']
         mixed_generator.load_state_dict(state_dict)
         print("\033[01;32m Generator loaded! \033[0m")
-        
- 
+    # use collator or not
+    if opt['ssl']=="group_CL" and opt["substitute_mode"]=="IR":
+        collator = CLDataCollator(opt, eval=-1, mixed_generator=mixed_generator)
+    else:
+        collator = None
+    # build dataloader
     if opt['training_mode'] != "evaluation":
         if opt['data_augmentation']=="item_augmentation":
-            train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None, generator = [source_generator, target_generator, mixed_generator])
+            train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = collator, generator = [source_generator, target_generator, mixed_generator])
         else:
             trainer = CDSRTrainer(opt, None, None)
-            train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = None)
+            train_batch = DataLoader(opt['data_dir'], opt['batch_size'], opt, evaluation = -1, collate_fn  = collator)
 
         valid_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 2, collate_fn  = None)
     test_batch = DataLoader(opt['data_dir'], opt["batch_size"], opt, evaluation = 1,collate_fn  = None)
@@ -111,10 +120,7 @@ def main(args):
     # if opt["cuda"]:
     #     adj = adj.cuda()
     #     adj_single = adj_single.cuda()
-    if opt["training_mode"] not in ["pretrain","finetune","joint_learn","joint_pretrain","evaluation"]:
-        raise ValueError("training mode must be pretrain, finetune, joint_learn or joint_pretrain")
-    if opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster"]:
-        raise ValueError("ssl must be mask_prediction, time_CL, augmentation_based_CL, no_ssl or proto_CL")
+    
     # model
     if opt['training_mode']=="finetune" or opt['training_mode']=="joint_learn"or opt['training_mode']=="evaluation":
         trainer = CDSRTrainer(opt, adj, adj_single)
@@ -159,7 +165,7 @@ def main(args):
             print("\033[01;34m Start evaluation... \033[0m\n")
             trainer.evaluate(test_batch, file_logger)
             return
-        if opt['data_augmentation']=="item_augmentation":
+        if opt['data_augmentation']=="item_augmentation" or opt['ssl']=="group_CL":
             trainer.generator = [source_generator, target_generator, mixed_generator]
         trainer.train(opt['num_epoch'], train_batch, valid_batch, test_batch, file_logger)
     else:
@@ -235,7 +241,7 @@ if __name__ == '__main__':
     parser.add_argument('--training_mode',default= "finetune", type = str, help=["pretrain","joint_pretrain","finetune","joint_learn"])
     parser.add_argument('--pretrain_model',type=str,default= None ,help="pretrain or not")
     parser.add_argument('--pretrain_epoch',type=int,default= 70 ,help="pretrain epoch")
-    parser.add_argument('--load_pretrain_epoch',type=int,default= None ,help="pretrain epoch")
+    parser.add_argument('--load_pretrain_epoch',type=int,default= 20 ,help="pretrain epoch")
     
     #time encoding
     parser.add_argument('--time_encode',type=bool,default= False ,help="time encoding or not")
@@ -256,9 +262,11 @@ if __name__ == '__main__':
     parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
     parser.add_argument('--generator_model',type=str,default= "X" ,help="generator model")
     parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment or not")
-
+    #interest clustering
     parser.add_argument('--topk_cluster',type=str,default= 5 ,help="number of multi-view cluster")
-
+    # group CL
+    parser.add_argument('--substitute_ratio',type=float,default= 0.2 ,help="substitute ratio")
+    parser.add_argument('--substitute_mode',type=str,default= "IR" ,help="IR, attention_weight")
     args = parser.parse_args()
     
     main(args)
