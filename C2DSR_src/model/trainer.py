@@ -155,8 +155,9 @@ class Trainer(object):
             neg_xd = inputs[23]
             masked_yd = inputs[24]
             neg_yd = inputs[25]
-            augmented_xd = inputs[26]
-            augmented_d = inputs[27]
+            augmented_d = inputs[26]
+            augmented_xd = inputs[27]
+            augmented_yd = inputs[28]
             gender = inputs[28]
         else:
             inputs = [Variable(b) for b in batch]
@@ -186,10 +187,11 @@ class Trainer(object):
             neg_xd = inputs[23]
             masked_yd = inputs[24]
             neg_yd = inputs[25]
-            augmented_xd = inputs[26]
-            augmented_d = inputs[27]
+            augmented_d = inputs[26]
+            augmented_xd = inputs[27]
+            augmented_yd = inputs[28]
             gender = inputs[28]
-        return index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,  augmented_xd, augmented_d,gender
+        return index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd, augmented_d, augmented_xd, augmented_yd,gender
     def unpack_batch_for_gen(self, batch):
         if self.opt["cuda"]:
             inputs = [Variable(b.cuda()) for b in batch]
@@ -400,7 +402,7 @@ class Pretrainer(Trainer):
         self.model.train()
         self.optimizer.zero_grad()
         cluster_result_X, cluster_result_Y, cluster_result_cross = cluster_result[0], cluster_result[1], cluster_result[2]
-        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_d,gender = self.unpack_batch(batch)
+        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd,augmented_d, augmented_xd,augmented_yd,gender = self.unpack_batch(batch)
         
         
         ssl_loss = torch.tensor(0, dtype = torch.float32).cuda()
@@ -1036,10 +1038,15 @@ class CDSRTrainer(Trainer):
             mask[i,i+batch_size] = 0
             mask[i+batch_size,i] = 0
         return mask
-    def group_CL(self, seq, domain = "mixed"):
+    def group_CL(self, seq, seq_xd, seq_yd):
         seq = seq.reshape(-1,seq.size(-1))
-        out = get_embedding_for_ssl(self.opt, seq, self.model.encoder, self.model.item_emb, projector = self.model.CL_projector)
-        z1,z2 = out[:len(out)//2,:], out[len(out)//2:,:]
+        seq_xd = seq_xd.reshape(-1,seq_xd.size(-1))
+        seq_yd = seq_yd.reshape(-1,seq_yd.size(-1))
+        out = get_embedding_for_ssl(self.opt, seq, self.model.encoder, self.model.item_emb, projector = None)
+        out_yd = get_embedding_for_ssl(self.opt, seq_yd, self.model.encoder_Y, self.model.item_emb_Y, projector = None)
+        out = self.model.CL_projector(out+out_yd)
+        out = out.reshape(-1,2,out.size(-1))
+        z1,z2 = out[:,0,:], out[:,1,:]
         batch_size = z1.size(0)
         N = batch_size*2
         z = torch.cat([z1,z2],dim=0)
@@ -1112,7 +1119,7 @@ class CDSRTrainer(Trainer):
         self.d_optimizer.zero_grad()
         self.model.graph_convolution()
         cluster_result_X, cluster_result_Y, cluster_result_cross = cluster_result[0], cluster_result[1], cluster_result[2]
-        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_d, gender = self.unpack_batch(batch)
+        index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd, augmented_d, augmented_xd,augmented_yd,gender = self.unpack_batch(batch)
         if self.opt['training_mode'] =="joint_learn":
             # time_CL
             if self.opt["ssl"]=="time_CL":
@@ -1149,7 +1156,7 @@ class CDSRTrainer(Trainer):
                 else:
                     I2C_loss = torch.Tensor([0]).cuda()
             if self.opt['ssl'] == "group_CL":
-                group_CL_loss = self.group_CL(augmented_d, domain = "mixed")
+                group_CL_loss = self.group_CL(augmented_d,augmented_xd,augmented_yd)
         if self.opt['domain'] =="single":
             seq = None 
             if self.opt['main_task'] == "X":
@@ -1417,7 +1424,7 @@ class CDSRTrainer(Trainer):
             # dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = None, model = self.model)
             for i,batch in enumerate(dataloader):  
                 self.d_optimizer.zero_grad()
-                index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_xd,augmented_d, gender = self.unpack_batch(batch)
+                index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd,augmented_d, augmented_xd,augmented_yd,gender= self.unpack_batch(batch)
                 # seqs_fea,_ = get_sequence_embedding(self.opt,seq,self.model.encoder,self.model.item_emb, encoder_causality_mask = True)
                 # y_seqs_fea,_ = get_sequence_embedding(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = True)
                 # pred = self.gender_discriminator(seqs_fea + y_seqs_fea).squeeze()

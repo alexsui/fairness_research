@@ -20,15 +20,36 @@ class CLDataCollator:
         if self.eval == -1: #for training
             augmented_d = self.augment(batch[1],all_ts = batch[7], gender=batch[-1]) #[B,2,max_len]
             # augmented_xd = self.augment(batch[26])
-            # augmented_yd = self.augment(batch[27])     
+            # augmented_yd = self.augment(batch[27])   
+            augmented_xd, augmented_yd,augmented_d = self.decompose(augmented_d)  
             return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.LongTensor(batch[6]), torch.LongTensor(batch[7]),torch.LongTensor(batch[8]), torch.LongTensor(batch[9]), torch.LongTensor(batch[10]), torch.LongTensor(batch[11]), torch.LongTensor(batch[12]), torch.LongTensor(batch[13]), torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),\
-                        torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]),torch.LongTensor(batch[26]), torch.LongTensor(augmented_d),torch.LongTensor(batch[28]))
+                        torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]), torch.LongTensor(augmented_d),torch.LongTensor(augmented_xd),torch.LongTensor(augmented_yd),torch.LongTensor(batch[28]))
         elif self.eval == 2: #for  validation
             augmented_d = self.augment(batch[0])
             augmented_xd = self.augment(batch[1])
             augmented_yd = self.augment(batch[2])
             return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.tensor(batch[6]), torch.tensor(batch[7]),torch.tensor(batch[8]), torch.LongTensor(batch[9]),\
                     torch.LongTensor(batch[10]),torch.LongTensor(batch[11]),torch.LongTensor(batch[12]),torch.LongTensor(batch[13]), torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]), torch.LongTensor(batch[18]), torch.LongTensor(augmented_d), torch.LongTensor(augmented_xd), torch.LongTensor(augmented_yd))
+    def decompose(self,seq):
+        # for i in range(2):
+        augmented_xd = []
+        augmented_yd = []
+        augmented_d = []
+        for s1,s2 in zip(seq[0],seq[1]):
+            xd_1 = [j for j in s1 if j < self.opt['source_item_num']]
+            yd_1 = [j for j in s1 if j >= self.opt['source_item_num'] and j != self.opt['source_item_num'] + self.opt['target_item_num']]
+            xd_2 = [j for j in s2 if j < self.opt['source_item_num']]
+            yd_2 = [j for j in s2 if j >= self.opt['source_item_num'] and j != self.opt['source_item_num'] + self.opt['target_item_num']]
+            if len(xd_1) == 0 or len(yd_1) == 0 or len(xd_2) == 0 or len(yd_2) == 0:
+                continue
+            xd_1 = [self.opt['source_item_num'] + self.opt['target_item_num']]*(self.opt['maxlen']-len(xd_1))+xd_1
+            yd_1 = [self.opt['source_item_num'] + self.opt['target_item_num']]*(self.opt['maxlen']-len(yd_1))+yd_1
+            xd_2 = [self.opt['source_item_num'] + self.opt['target_item_num']]*(self.opt['maxlen']-len(xd_2))+xd_2
+            yd_2 = [self.opt['source_item_num'] + self.opt['target_item_num']]*(self.opt['maxlen']-len(yd_2))+yd_2
+            augmented_xd.append([xd_1,xd_2])
+            augmented_yd.append([yd_1,yd_2])
+            augmented_d.append([s1,s2])
+        return augmented_xd, augmented_yd,augmented_d
     def generate(self,seq, positions, timestamp, female_IR):
         
         torch_seq = torch.LongTensor(seq) #[X,max_len]
@@ -49,13 +70,17 @@ class CLDataCollator:
             target_fea = seq_fea[mask]
             target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
             probabilities = torch.nn.functional.softmax(target_fea, dim=1)
-            sampled_indices = torch.multinomial(probabilities, 10, replacement=False).squeeze() #[X,10]
-            ### insert highest female interaction ratio item ### 
-            mapping = torch.zeros(self.opt['source_item_num']+self.opt['target_item_num'],dtype=torch.float32).cuda()
-            for k in female_IR.keys():
-                mapping[int(k)] = female_IR[k]
-            selected_idx_index = mapping[sampled_indices].argmax(dim=-1)
-            sampled_indices = sampled_indices[torch.arange(len(sampled_indices)),selected_idx_index]
+            if self.opt['substitute_mode'] in ["attention_weight","IR"]:
+                num_sample = 30
+                sampled_indices = torch.multinomial(probabilities, num_sample, replacement=False).squeeze() #[X,10]
+                ### insert highest female interaction ratio item from 10 item### 
+                mapping = torch.zeros(self.opt['source_item_num']+self.opt['target_item_num'],dtype=torch.float32).cuda()
+                for k in female_IR.keys():
+                    mapping[int(k)] = female_IR[k]
+                selected_idx_index = mapping[sampled_indices].argmax(dim=-1)
+                sampled_indices = sampled_indices[torch.arange(len(sampled_indices)),selected_idx_index]
+            elif self.opt['substitute_mode'] == "random":
+                sampled_indices = torch.multinomial(probabilities, 1, replacement=False).squeeze()
             if type =="Y":
                 sampled_indices = sampled_indices + self.opt['source_item_num']
             torch_seq[mask] = sampled_indices
@@ -65,9 +90,9 @@ class CLDataCollator:
         return new_seq
         
     def augment(self,item_seqs, all_ts, gender):
-        with open(f"./fairness_dataset/Movie_lens_time/{self.opt['data_dir']}/male_IR.json","r") as f:
+        with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/male_IR.json","r") as f:
             male_IR = json.load(f)
-        with open(f"./fairness_dataset/Movie_lens_time/{self.opt['data_dir']}/female_IR.json","r") as f:
+        with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/female_IR.json","r") as f:
             female_IR = json.load(f)
         ratio = self.opt['substitute_ratio']
         augmented_d = []
@@ -114,12 +139,19 @@ class CLDataCollator:
                     sampled_pos = np.random.choice(len(values), size=max(int(item_seq_len * ratio), 1), replace=False, p=probabilities)
                     selected_item = [k for i,(k,v) in enumerate(pair.items()) if i in sampled_pos]
                     substitute_idxs = np.where(item_seq == np.array(selected_item)[:, None])[1]
+                elif self.opt['substitute_mode'] =="random":
+                    substitute_idxs = np.random.choice(item_seq_len, max(int(item_seq_len * ratio), 1), replace=False)
                 else:
                     raise ValueError("substitute_mode should be attention_weight or IR")
                 for index in substitute_idxs:
                     item_seq[index] = self.opt['itemnum']
                 position = [0]*(self.opt['maxlen']-item_seq_len) + list(range(item_seq_len+1)[1:])[-self.opt['maxlen']:]
                 new_seq = item_seq.tolist()[-self.opt['maxlen']:]
+                xd = [j for j in new_seq if j < self.opt['source_item_num']]
+                yd = [j for j in new_seq if j >= self.opt['source_item_num'] and j != self.opt['source_item_num'] + self.opt['target_item_num']]
+                # if len(xd) == 0 or len(yd) == 0:
+                #     skip_id.append(i)
+                #     continue
                 new_seqs.append(new_seq)
                 new_positions.append(position)
             augmented_seq= self.generate(new_seqs, new_positions, ts, female_IR)

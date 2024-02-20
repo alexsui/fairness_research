@@ -35,7 +35,7 @@ class DataLoader(DataLoader):
         
         self.opt["maxlen"] = 50
         # ************* item_id *****************
-        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/Movie_lens_time/" + filename + "/train.txt")
+        opt["source_item_num"], opt["target_item_num"] = self.read_item(f"./fairness_dataset/{self.opt['dataset']}/" + filename + "/train.txt")
         opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
         
         # print(opt["source_item_num"] )
@@ -43,9 +43,9 @@ class DataLoader(DataLoader):
 
         # ************* sequential data *****************
         # if self.opt['domain'] =="cross":
-        source_train_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/train.txt"
-        source_valid_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/valid.txt"
-        source_test_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/test.txt"
+        source_train_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/train.txt"
+        source_valid_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/valid.txt"
+        source_test_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/test.txt"
       
 
         if evaluation < 0:
@@ -142,7 +142,7 @@ class DataLoader(DataLoader):
         print("Number of male sequence:",len([s for s in self.train_data if s[0]==1]))
         print("*"*50)
     def generate(self,seq, positions, timestamp, type):
-        with open(f"./fairness_dataset/Movie_lens_time/{self.opt['data_dir']}/item_IF.json","r") as f:
+        with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/item_IF.json","r") as f:
             item_if = json.load(f)
         
         gender = [s[0] for s in seq]
@@ -189,7 +189,7 @@ class DataLoader(DataLoader):
         new_seq = [(g,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for g, sublist, timestamp in zip(gender, new_seq, torch_ts.tolist())]
         return new_seq
     def item_generate(self):
-        with open(f"./fairness_dataset/Movie_lens_time/{self.filename}/average_sequence_length.json","r")  as f:
+        with open(f"./fairness_dataset/{self.opt['dataset']}/{self.filename}/average_sequence_length.json","r")  as f:
             avg_length = json.load(f)
         source_flag = 1 if avg_length['source_male'] < avg_length['source_female'] else 0
         target_flag = 1 if avg_length['target_male'] < avg_length['target_female'] else 0
@@ -1021,7 +1021,7 @@ class DataLoader(DataLoader):
             # near_yd = torch.cat((near_yd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(max_len-near_yd.shape[0], near_yd.shape[1])), 0)
             # ipdb.set_trace()
             processed.append([index, d, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, 
-                                  share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd, augment_xd, augment_yd, gender])
+                                  share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd, 0, augment_xd, augment_yd, gender])
         print(f"number of training male deleted after preprocess: {male_delete_num}")
         print(f"number of training female deleted after preprocess: {female_delete_num}")
         return processed
@@ -1043,7 +1043,6 @@ class DataLoader(DataLoader):
                 batch = self.collate_fn(batch)
                 return batch
             else:   
-                
                 return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.tensor(batch[6]), torch.tensor(batch[7]), torch.tensor(batch[8]), torch.tensor(batch[9]),\
                     torch.LongTensor(batch[10]),torch.LongTensor(batch[11]),torch.LongTensor(batch[12]),torch.LongTensor(batch[13]),torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]))
         else :
@@ -1053,7 +1052,7 @@ class DataLoader(DataLoader):
             else:
                 return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.LongTensor(batch[6]), torch.LongTensor(batch[7]), torch.LongTensor(batch[8]), torch.LongTensor(batch[9]), torch.LongTensor(batch[10]), torch.LongTensor(batch[11]),\
                         torch.LongTensor(batch[12]), torch.LongTensor(batch[13]), torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),\
-                        torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]),torch.LongTensor(batch[26]),torch.LongTensor(batch[27]),torch.LongTensor(batch[28]))
+                        torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]),torch.LongTensor(batch[26]),torch.LongTensor(batch[27]),torch.LongTensor(batch[28]),torch.LongTensor(batch[29]))
     def __iter__(self):
         for i in range(self.__len__()):
             yield self.__getitem__(i)
@@ -1069,7 +1068,7 @@ class GDataLoader(DataLoader):
         self.collate_fn = collate_fn
         self.eval = eval
         # ************* item_id *****************
-        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/Movie_lens_time/" + filename + "/train.txt")
+        opt["source_item_num"], opt["target_item_num"] = self.read_item(f"./fairness_dataset/{self.opt['dataset']}/" + filename + "/train.txt")
         opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
        
         if "Enter" in self.filename:
@@ -1081,9 +1080,9 @@ class GDataLoader(DataLoader):
         self.mask_id = opt["source_item_num"]+ opt["target_item_num"] +1
         # ************* sequential data *****************
         # if self.opt['domain'] =="cross":
-        source_train_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/train.txt"
-        source_valid_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/valid.txt"
-        source_test_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/test.txt"
+        source_train_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/train.txt"
+        source_valid_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/valid.txt"
+        source_test_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/test.txt"
         if self.eval == -1: 
             self.train_data = self.read_train_data(source_train_data)
         else:
@@ -1265,7 +1264,7 @@ class NonoverlapDataLoader(DataLoader):
         # folder_name = f"{data1.lower()}_{data2.lower()}"
         A_data_name = data1.capitalize() if data1!="Sci-Fi" and data1!="Film-Noir" else data1
         B_data_name = data2.capitalize() if data2!="Sci-Fi" and data2!="Film-Noir" else data2
-        opt["source_item_num"], opt["target_item_num"] = self.read_item("./fairness_dataset/Movie_lens_time/" + filename + f"/nonoverlap_Y_female_{B_data_name}.txt")
+        opt["source_item_num"], opt["target_item_num"] = self.read_item(f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/nonoverlap_Y_female_{B_data_name}.txt")
         opt['itemnum'] = opt['source_item_num'] + opt['target_item_num'] + 1
        
         if "Enter" in self.filename:
@@ -1277,7 +1276,7 @@ class NonoverlapDataLoader(DataLoader):
         self.mask_id = opt["source_item_num"]+ opt["target_item_num"] +1
         # ************* sequential data *****************
       
-        source_train_data = "./fairness_dataset/Movie_lens_time/" + filename + f"/nonoverlap_Y_female_{B_data_name}.txt"
+        source_train_data = f"./fairness_dataset/{self.opt['dataset']}/" + filename + f"/nonoverlap_Y_female_{B_data_name}.txt"
         self.train_data = self.read_train_data(source_train_data)
 
 

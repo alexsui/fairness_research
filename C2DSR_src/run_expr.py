@@ -13,7 +13,12 @@ parser.add_argument(
     default="Food-Kitchen",
     help="Movie-Book, Entertainment-Education",
 )
-
+parser.add_argument(
+    "--dataset",
+    type=str,
+    default="Movie_lens_time",
+    help="Movie-Book, Entertainment-Education",
+)
 # model part
 parser.add_argument("--model", type=str, default="C2DSR", help="model name")
 parser.add_argument("--hidden_units", type=int, default=128, help="lantent dim.")
@@ -192,8 +197,9 @@ modes = [
 
 # evaluation_models = ["fairness_maintaskY_usergen_biasFree_lambda2","fairness_maintaskY_none_biasFree"]
 # evaluation_models = ["fairness_baseline_Y","fairness_baseline_Y_single_domain"]
+# modes = ["fairness_baseline_Y","fairness_baseline_Y_single"]
 training_mode = "joint_learn"
-domain = "cross"
+domains = "cross"
 main_task = "Y"
 ssl = "group_CL"
 data_augmentation = None
@@ -216,17 +222,19 @@ for data_idx in range(len(data_dir)):
     data_name = data_dir[data_idx]
     for i, ratio in enumerate(substitute_ratios):
         for mode in substitute_modes:
+    # for i, domain in enumerate(domains):
             for seed in range(1, num_seeds+1):
                 args.training_mode = training_mode
-                args.domain = domain
+                # args.domain = domain
                 args.main_task = main_task
                 args.time_encode = time_encode
                 args.substitute_mode = mode
                 args.substitute_ratio = ratio
                 args.data_augmentation = data_augmentation     
                 args.data_dir = data_name
-                # args.evaluation_model = f"fairness_maintaskY_groupCL_{mode}_ratio{ratio}"
-                args.id =  f"fairness_maintaskY_groupCL_female{mode}_ratio{ratio}"
+                args.dataset = "Movie_lens_time"
+                # args.evaluation_model = f"fairness_maintaskY_groupCL_female{mode}_ratio{ratio}_double"
+                args.id =  f"fairness_maintaskY_groupCL_{mode}_ratio{ratio}_double_sample30"
                 args.seed = seed
                 args.warmup_epoch = warmup_epoch
                 args.num_cluster = "100,100,100"

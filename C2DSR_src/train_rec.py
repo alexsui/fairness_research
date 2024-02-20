@@ -63,7 +63,7 @@ def main(args):
     
     if opt["training_mode"] not in ["pretrain","finetune","joint_learn","joint_pretrain","evaluation"]:
         raise ValueError("training mode must be pretrain, finetune, joint_learn or joint_pretrain")
-    if opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster","group_CL"]:
+    if opt["training_mode"] in ["joint_learn","joint_pretrain","pretrain"] and opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster","group_CL"]:
         raise ValueError("ssl must be mask_prediction, time_CL, augmentation_based_CL, no_ssl or proto_CL","triple_pull","NNCL","interest_cluster","group_CL")
     
     # read number of items
@@ -72,7 +72,7 @@ def main(args):
             item_num = [int(d.strip()) for d in fr.readlines()[:2]]
         return item_num
     filename = opt["data_dir"]
-    opt["source_item_num"], opt["target_item_num"] = read_item("./fairness_dataset/Movie_lens_time/" + filename + "/train.txt")
+    opt["source_item_num"], opt["target_item_num"] = read_item(f"./fairness_dataset/{opt['dataset']}/" + filename + "/train.txt")
     opt['itemnum'] = opt["source_item_num"] + opt["target_item_num"] +1
     if opt['data_augmentation']!="item_augmentation" and opt['data_augmentation']!="user_generation" and opt['data_augmentation'] is not None:
         raise ValueError("data augmentation must be item_augmentation or user_generation")
@@ -92,7 +92,7 @@ def main(args):
         mixed_generator.load_state_dict(state_dict)
         print("\033[01;32m Generator loaded! \033[0m")
     # use collator or not
-    if opt['ssl']=="group_CL" and opt["substitute_mode"]=="IR":
+    if opt['ssl']=="group_CL" and opt["substitute_mode"]in ["IR","random"]:
         collator = CLDataCollator(opt, eval=-1, mixed_generator=mixed_generator)
     else:
         collator = None
