@@ -1,7 +1,15 @@
+import optuna
+import plotly as plot
+import torch
+import numpy as np
+import argparse
+import torch
+from train_rec import main
+import ipdb
+import glob
 import argparse
 import time
 import torch
-from train_rec import main
 import os
 import glob
 import ipdb
@@ -16,7 +24,7 @@ parser.add_argument(
 parser.add_argument(
     "--dataset",
     type=str,
-    default="Movie_lens_time",
+    default="Movie_lens_final",
     help="Movie-Book, Entertainment-Education",
 )
 # model part
@@ -58,6 +66,7 @@ parser.add_argument(
     "--cuda",
     type=bool,
     default=torch.cuda.is_available(),
+    # default=False,
     help="Enables CUDA training.",
 )
 parser.add_argument("--lambda", type=float, default=0.7)
@@ -140,7 +149,7 @@ parser.add_argument('--cross_weight',type=float,default=0.001 ,help="cross domai
 parser.add_argument('--num_proto_neg',type=int,default= 1280 ,help="intra domain weight for proto CL")
 
 #pretrain
-parser.add_argument('--training_mode',default= "finetune", type = str, help='["pretrain","joint_pretrain","finetune","joint_learn"]')
+parser.add_argument('--training_mode',default= "joint_learn", type = str, help='["pretrain","joint_pretrain","finetune","joint_learn"]')
 parser.add_argument('--pretrain_epoch',type=int,default= 70 ,help="pretrain epoch")
 # parser.add_argument('--joint_learn',default= False , action='store_true', help="ssl + main task")
 # parser.add_argument('--joint_pretrain', default= False, action='store_true', help="ssl + two encoder  loss task")
@@ -178,149 +187,81 @@ parser.add_argument('--substitute_mode',type=str, default= "IR" ,help="IR, atten
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
 args, unknown = parser.parse_known_args()
 
-modes = [
-    # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
-    # "fairness_baseline_Y_triple_pull"
-    # "fairness_baseline_Y_time_eval","fairness_baseline_Y_single_domain_time_eval",
-    # "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize40_eval","fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize50_eval",
-    # "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize40","fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize50"
-    # "fairness_maintaskY_usergen_biasFree_eval","fairness_maintaskY_usergen_sequentialSimTop5_repeat2_eval","fairness_maintaskY_usergen_sequentialSim_repeat2_eval",
-    # "fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_unbalance_max7_eval"
-    # "fairness_baseline_Y_eval","fairness_baseline_Y_single_domain_eval"
-    # "fairness_maintaskY_usergen_biasFree_fakelabel_eval","fairness_maintaskY_usergen_biasFree_eval"
-    # "fairness_maintaskY_usergen_random_repeat2_eval"
-    # "fairness_maintaskY_groupCL_"
-    # "fairness_maintaskY_generatorAll_generatenumPoisson_random_20epoch_eval"
-    # "fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_eval","fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_unbalance_max7_eval"
-    # "fairness_maintaskY_usergen_biasFree_lambda2_eval","fairness_maintaskY_none_biasFree_eval"
-]
-# evaluation_models = ["fairness_maintaskY_usergen_biasFree_lambda2","fairness_maintaskY_none_biasFree"]
-# evaluation_models = ["fairness_baseline_Y","fairness_baseline_Y_single_domain"]
-modes = ["fairness_baseline_Y","fairness_baseline_Y_single"]
-training_mode = "finetune"
-domains = ["cross","single"]
-# domain = "cross"
-main_task = "Y"
-ssl = None
-data_augmentation = None
-time_encode = False
-# substitute_ratios = [0.2,0.3,0.4]
-# substitute_modes = ["IR"]
-# topk_clusters = [3, 5, 7]
-# num_clusters = ["100,100,100", "200,200,200","300,300,300"]
-alphas = [0.2,0.4]
+def objective(trial, data_dir):
+    # Generate the hyperparameters to be tuned
+    #item augmentation
+    alpha = trial.suggest_float("alpha", 0.2, 0.6, step=0.1)
+    #interest clustering
+    topk_cluster = trial.suggest_categorical("topk_cluster", [3, 5, 7])
+    num_clusters_option = trial.suggest_categorical("num_clusters_option", ["200,200,200", "300,300,300","400,400,400","500,500,500"])
+    warmup_epoch = trial.suggest_categorical("warmup_epoch",[1,10])
+    #group CL
+    substitute_ratio = trial.suggest_float("substitute_ratio", 0.1, 0.5, step=0.1)
+    # loss weight
+    lambda_0 = trial.suggest_float("lambda_0", 0.4, 1, step =0.1)  # Adjust the range as needed
+    lambda_1 = trial.suggest_float("lambda_1", 0.4, 1, step =0.1)  # Adjust the range as needed
+    args.ssl = "both"
+    args.main_task = "Y"
+    args.domain = "cross"
+    args.seed = 2024
+    args.training_mode = "joint_learn"
+    args.data_augmentation = "item_augmentation"
+    args.id = f"alpha{round(alpha,3)}_topk{topk_cluster}_num_cluster{num_clusters_option}_warmup{warmup_epoch}_substitute{round(substitute_ratio,3)}_lambda_{lambda_0}_{lambda_1}"
+    args.data_dir = data_dir
+    args.substitute_ratio = round(substitute_ratio,3)
+    args.topk_cluster = topk_cluster
+    args.num_cluster = num_clusters_option
+    args.alpha = round(alpha,3)
+    args.warmup_epoch = warmup_epoch
+    args.lambda_ = [lambda_0, lambda_1]
+    best_Y_test, best_Y_test_male, best_Y_test_female  = main(args)
+    # return best_Y_test_male[1] - best_Y_test_female[1] #NDCG@5
+    trial.set_user_attr(key="best_Y_test", value=best_Y_test)
+    trial.set_user_attr(key="best_Y_test_male", value=best_Y_test_male)
+    trial.set_user_attr(key="best_Y_test_female", value=best_Y_test_female)
+    return best_Y_test_male[1] - best_Y_test_female[1], best_Y_test[1]
+# Optimize the hyperparameters using Optuna
+def callback(study, trial):
+    # if study.best_trials.number == trial.number:
+    #     # Update the study's user attributes with the best trial's additional info
+    #     study.set_user_attr('best_Y_test_male', value = trial.user_attrs['best_Y_test_male'])
+    #     study.set_user_attr('best_Y_test_female', value = trial.user_attrs['best_Y_test_female'])
+    for best_trial in study.best_trials:
+        if best_trial.number == trial.number:
+            # Update the study's user attributes with the best trial's additional info
+            study.set_user_attr('best_Y_test', trial.user_attrs['best_Y_test'])
+            study.set_user_attr('best_Y_test_male', trial.user_attrs['best_Y_test_male'])
+            study.set_user_attr('best_Y_test_female', trial.user_attrs['best_Y_test_female'])
+            break
 folder_list = glob.glob("./fairness_dataset/Movie_lens_final/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
-data_dir = [x for x in folder_list]
-data_dir = ['war_crime']
-print(data_dir)
-# warmup_epochs = [1,10] 
-warmup_epoch = 1
-print("Config of Experiment:")
-print(f"Modes: {modes}")
-print("training_mode:", training_mode)
-print(f"Data: {data_dir}")
-num_seeds = 5
-for data_idx in range(len(data_dir)):
-    data_name = data_dir[data_idx]
-    # for i, topk_cluster in enumerate(topk_clusters):
-    #     for num_cluster in num_clusters:
-    for i, domain in enumerate(domains):
-            # for warmup_epoch in warmup_epochs:
-    # for alpha in alphas:
-        for seed in range(1, num_seeds+1):
-            args.training_mode = training_mode
-            args.domain = domain
-            args.main_task = main_task
-            args.time_encode = time_encode
-            # args.substitute_mode = substitute_modes[0]
-            # args.substitute_ratio = substitute_ratios[0]
-            # args.topk_cluster = topk_clusters[0]
-            # args.num_cluster = num_clusters[0]
-            # args.alpha = alpha
-            args.data_augmentation = data_augmentation     
-            args.data_dir = data_name
-            args.dataset = "Movie_lens_final"
-            # args.evaluation_model = f"fairness_maintaskY_interest_numCluster{num_cluster.split(',')[0]}_topk{topk_cluster}_warmup{warmup_epoch}"
-            # args.id =  f"fairness_maintaskY_groupCL_female{mode}_ratio{ratio}_double"
-            # args.id = f"fairness_maintaskY_interest_numCluster{num_cluster.split(',')[0]}_topk{topk_cluster}_warmup{warmup_epoch}_eval"
-            args.id = f"{modes[i]}_50"
-            # args.evaluation_model = f"{modes[i]}"
-            args.seed = seed
-            args.warmup_epoch = warmup_epoch
-            args.num_cluster = "100,100,100"
-            args.ssl = ssl
-            main(args)
-
-# for finetune item generation
-# folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
-# folder_list = [x.split("/")[-1] for x in folder_list]
-# data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-# print(data_dir)
-# # data_dir = ["comedy_drama",'adventure_thriller']
-# # generator_models = ["X_time","mixed_time"]
-# # generate_types = ["X","mixed"]
-# # generate_nums = [3, 5, 7]
-# data_augmentation = 'item_augmentation'
-# load_pretrain_epochs = [20]
-# training_mode = "finetune"
-# main_task = "Y"
-# domain = "cross"
-# time_encode = False
-# print("Config of Experiment:")
-# print(f"load_pretrain_epochs: {load_pretrain_epochs}")
-# print(f"Data: {data_dir}")
-# num_seeds = 5
-# for data_idx in range(len(data_dir)):
-#     data_name = data_dir[data_idx]
-#     for epoch in load_pretrain_epochs:
-#         for seed in range(1, num_seeds+1):
-#             args.load_pretrain_epoch = epoch           
-#             args.training_mode = training_mode
-#             args.data_augmentation = data_augmentation
-#             args.domain = domain
-#             args.main_task = main_task
-#             args.time_encode = time_encode
-#             args.data_dir = data_name
-#             id =f"fairness_maintask{main_task}_generatorAll_generatenumPoisson_sample5_IFTop3_{epoch}epoch"
-#             args.id = id
-#             args.seed = seed
-#             args.num_cluster = "2,3,4"
-#             args.warmup_epoch = 10000
-#             main(args)
-                    
-# # evaluation
-# folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
-# folder_list = [x.split("/")[-1] for x in folder_list]
-# data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-# print(data_dir)
-# # mode_name = glob.glob("./saved_models/comedy_thriller/fairness_maintaskY_generatorAll*20epoch")
-# # evaluation_models = [ x.split("/")[-1] for x in mode_name]
-# evaluation_models = ["fairness_maintaskY_generatorAll_generatenumPoisson_sample10_IFTop5_20epoch"]
-# print("evaluation_models:", evaluation_models)
-# # generate_types = ["X","Y","mixed"]
-# load_pretrain_epochs = [20]
-# training_mode = "evaluation"
-# time_encode = False
-# main_task = "Y"
-# domain = "cross"
-# print("Config of Experiment:")
-# print(f"load_pretrain_epochs: {load_pretrain_epochs}")
-# print(f"Data: {data_dir}")
-# num_seeds = 5
-# for data_idx in range(len(data_dir)):
-#     data_name = data_dir[data_idx]
-#     for i, model in enumerate(evaluation_models):
-#         for seed in range(1, num_seeds+1):
-#             args.evaluation_model = model
-#             args.training_mode = training_mode
-#             args.domain = domain
-#             args.main_task = main_task
-#             args.data_dir = data_name
-#             args.time_encode = time_encode
-#             id =f"{model}_eval"
-#             args.id = id
-#             args.seed = seed
-#             args.num_cluster = "2,3,4"
-#             args.warmup_epoch = 10000
-#             main(args)
+folder_list = ["war_crime","horror_war","horror_crime"]
+for folder in folder_list:
+    study = optuna.create_study(directions=['minimize','maximize'])  # or 'minimize' based on your goal
+    # study.optimize(objective, n_trials=50)
+    study.optimize(lambda trial: objective(trial, folder), n_trials=50, callbacks=[callback])
+    # Get the best parameters
+    # best_params = study.best_params
+    # best_value = study.best_value
+    # best_Y_test_male = study.user_attrs.get('best_Y_test_male', None)
+    # best_Y_test_female = study.user_attrs.get('best_Y_test_female', None)
+    # print(f"{folder} - best_Y_test_male :", best_Y_test_male)
+    # print(f"{folder} - best_Y_test_female :", best_Y_test_female)
+    
+    if study.best_trials:
+        for best_trial in study.best_trials:
+            print(f"{folder} - Trial#{best_trial.number} - best_params :", best_trial.params)
+            print(f"{folder} - - Trial#{best_trial.number} - best_value :", best_trial.values)
+            print(f"{folder} - Trial#{best_trial.number} - best_Y_test: {best_trial.user_attrs['best_Y_test']}")
+            print(f"{folder} - Trial#{best_trial.number} - best_Y_test_male: {best_trial.user_attrs['best_Y_test_male']}")
+            print(f"{folder} - Trial#{best_trial.number} - best_Y_test_female: {best_trial.user_attrs['best_Y_test_female']}")
+        file_path = f'param_tune_result/{folder}.txt'
+        with open(file_path, 'w') as file:
+            for best_trial in study.best_trials:
+                file.write(f"{folder} - Trial#{best_trial.number} - best_params :{best_trial.params}\n")
+                file.write(f"{folder} - - Trial#{best_trial.number} - best_value :{best_trial.values}\n")
+                file.write(f"{folder} - Trial#{best_trial.number} - best_Y_test: {best_trial.user_attrs['best_Y_test']}\n")
+                file.write(f"{folder} - Trial#{best_trial.number} - best_Y_test_male: {best_trial.user_attrs['best_Y_test_male']}\n")
+                file.write(f"{folder} - Trial#{best_trial.number} - best_Y_test_female: {best_trial.user_attrs['best_Y_test_female']}\n")              
+                file.write("-"*50 + "\n")
+    

@@ -53,7 +53,7 @@ class DataLoader(DataLoader):
             if self.opt['data_augmentation']=="user_generation" and self.model is not None:
                 self.overlap_user_generation()
             if self.opt['data_augmentation']=="item_augmentation" and generator is not None:
-                self.item_generate()
+                self.item_generate_female()
             data = self.preprocess()
             self.num_examples = len(data)
             
@@ -141,12 +141,11 @@ class DataLoader(DataLoader):
         print("Number of female sequence:",len([s for s in self.train_data if s[0]==0]))
         print("Number of male sequence:",len([s for s in self.train_data if s[0]==1]))
         print("*"*50)
-    def generate(self,seq, positions, timestamp, type):
+    def generate(self,seq, positions, timestamp, gender, type):
         with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/item_IF.json","r") as f:
             item_if = json.load(f)
-        
-        gender = [s[0] for s in seq]
-        seq = [s[1] for s in seq]
+        # gender = [s[0] for s in seq]
+        # seq = [s[1] for s in seq]
         if type == "X":
             generator = self.source_generator
         elif type == "Y":
@@ -157,7 +156,9 @@ class DataLoader(DataLoader):
         mask = torch_seq == self.opt['itemnum']
         torch_position = torch.LongTensor(positions) #[X,max_len]
         torch_ts = torch.LongTensor(timestamp) #[X,max_len]
+        
         generator.eval()
+        # ipdb.set_trace()
         if self.opt['cuda']:
             generator = generator.cuda()
             torch_seq = torch_seq.cuda()
@@ -167,7 +168,10 @@ class DataLoader(DataLoader):
             if self.opt['time_encode']:
                 seq_fea = generator(torch_seq,torch_position,torch_ts) #[X,max_len,item_num]
             else:
-                seq_fea = generator(torch_seq,torch_position)
+                try:
+                    seq_fea = generator(torch_seq,torch_position)
+                except:
+                    ipdb.set_trace()
             target_fea = seq_fea[mask]
             target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
             probabilities = torch.nn.functional.softmax(target_fea, dim=1)
@@ -188,6 +192,46 @@ class DataLoader(DataLoader):
        
         new_seq = [(g,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for g, sublist, timestamp in zip(gender, new_seq, torch_ts.tolist())]
         return new_seq
+    def item_generate_female(self):
+        print("\033[33mitem generation for female\033[0m")
+        female_seq = [d for d in self.train_data if d[0]==0]
+        # ipdb.set_trace()
+        male_seq = [d for d in self.train_data if d[0]==1]
+        new_seqs = []
+        timestamp = []
+        positions = []
+        alpha = self.opt['alpha']
+        for gender,seq in female_seq:
+            #確保mixed sequence不全是source item
+            min_,max_ = 3, int(alpha*len(seq))
+            if max_<=min_:
+                min_ = max_
+            inserted_item_num = torch.randint(min_, max_+1, (1,))
+            if all([x[0] < self.opt['source_item_num'] for x in seq]):
+                continue
+            # idxs = random.choices(list(range(0, len(seq))), k = self.opt['generate_num']) #random insertion
+            insert_idxs = np.argsort(np.abs(np.diff(np.array([s[1] for s in seq]))))[-inserted_item_num :] + 1 # interval insertion
+            new_seq = copy.deepcopy(seq)
+            for index in insert_idxs:
+                if index == len(new_seq)-1:
+                    new_seq.append([self.opt['itemnum'],new_seq[index][1]])
+                    continue
+                t1 = new_seq[index-1][1]
+                t2 = new_seq[index][1]
+                new_ts = int((t1+t2)/2)
+                new_seq.insert(index, [self.opt['itemnum'],new_ts])
+            position = list(range(len(new_seq)+1))[1:]
+            ts = [0] * (self.opt["maxlen"] - len(new_seq)) + [t for i,t in new_seq]
+            new_seq = [self.opt["source_item_num"] + self.opt["target_item_num"]] * (self.opt["maxlen"] - len(new_seq)) + [ i for i,t in new_seq ]
+            position = [0] * (self.opt["maxlen"] - len(position)) + position
+            # ipdb.set_trace()
+            new_seqs.append(new_seq[-self.opt['maxlen']:])
+            positions.append(position[:self.opt['maxlen']])
+            timestamp.append(ts[-self.opt['maxlen']:])
+        gender = [0]*len(new_seqs)
+        new_female_seq = self.generate(new_seqs, positions, timestamp, gender, type = "mixed")
+        
+        self.train_data = new_female_seq + male_seq
     def item_generate(self):
         with open(f"./fairness_dataset/{self.opt['dataset']}/{self.filename}/average_sequence_length.json","r")  as f:
             avg_length = json.load(f)
@@ -214,6 +258,7 @@ class DataLoader(DataLoader):
         target_l, target_positions, target_timestamp = [], [], []
         both_l, both_positions, both_timestamp = [], [], []
         no_augment_data = []
+        genders = []
         max_item_num =7
         min_item_num = 1
         for gender, seq in self.train_data:
@@ -268,16 +313,17 @@ class DataLoader(DataLoader):
                 new_seq = [i for i,t in new_seq][-self.opt['maxlen']:]
                 position = position[:self.opt['maxlen']]
                 ts = ts[-self.opt['maxlen']:]
+            genders.append(gender)
             if (gender==0 and female_insert_type =="X") or (gender==1 and male_insert_type =="X"): 
-                source_l.append([gender, new_seq])
+                source_l.append([new_seq])
                 source_positions.append(position)
                 source_timestamp.append(ts)
             elif (gender==0 and female_insert_type =="Y") or (gender==1 and male_insert_type =="Y"):
-                target_l.append([gender, new_seq])
+                target_l.append([new_seq])
                 target_positions.append(position)
                 target_timestamp.append(ts)
             else:
-                both_l.append([gender, new_seq])
+                both_l.append([new_seq])
                 both_positions.append(position)
                 both_timestamp.append(ts)
         
@@ -305,11 +351,11 @@ class DataLoader(DataLoader):
         #         timestamp.append(ts)
         new_seq1, new_seq2, new_seq3 = [], [], []
         if source_l:
-            new_seq1 = self.generate(source_l, source_positions, source_timestamp, type = "X")
+            new_seq1 = self.generate(source_l, source_positions, source_timestamp,genders, type = "X")
         if target_l:
-            new_seq2 = self.generate(target_l, target_positions, target_timestamp, type = "Y")
+            new_seq2 = self.generate(target_l, target_positions, target_timestamp,genders, type = "Y")
         if both_l:
-            new_seq3 = self.generate(both_l, both_positions, both_timestamp, type ="mixed")
+            new_seq3 = self.generate(both_l, both_positions, both_timestamp,genders, type ="mixed")
         self.train_data = new_seq1 + new_seq2 + new_seq3 + no_augment_data
         # print("Number of source item sequnece detected:",count)
     def read_item(self, fname):
@@ -366,7 +412,7 @@ class DataLoader(DataLoader):
                             target_idx = idx
                             break
                 # ipdb.set_trace()
-                if target_idx <5: # test data is too short to predict
+                if target_idx < 3: # test data is too short to predict
                     deleted_test_data_num += 1
                     continue
                 if self.opt['main_task']=="X":
@@ -568,7 +614,6 @@ class DataLoader(DataLoader):
             y_position = []
             ts_yd = []
 
-            
             masked_xd = []
             neg_xd = []
             masked_yd = []
@@ -1019,7 +1064,8 @@ class DataLoader(DataLoader):
             # near_xd = torch.cat((near_xd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(max_len-near_xd.shape[0], near_xd.shape[1])), 0)
             # near_yd = torch.cat((near_yd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(near_yd.shape[0], max_len-near_yd.shape[1])), 1)
             # near_yd = torch.cat((near_yd, torch.tensor([self.opt["source_item_num"] + self.opt["target_item_num"]]).repeat(max_len-near_yd.shape[0], near_yd.shape[1])), 0)
-            # ipdb.set_trace()
+
+            
             processed.append([index, d, xd, yd, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, 
                                   share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y, masked_xd, neg_xd, masked_yd, neg_yd, 0, augment_xd, augment_yd, gender])
         print(f"number of training male deleted after preprocess: {male_delete_num}")

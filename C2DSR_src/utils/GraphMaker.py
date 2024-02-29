@@ -34,19 +34,30 @@ class GraphMaker(object):
 
         def takeSecond(elem):
             return elem[1]
+        # with codecs.open(filename, "r", encoding="utf-8") as infile:
+        #     for id, line in enumerate(infile):
+        #         res = []
+        #         line = line.strip().split("\t")[2:]
+        #         for w in line:
+        #             w = w.split("|")
+        #             res.append((int(w[0]), int(w[1])))
+        #         res.sort(key=takeSecond)
+        #         res_2 = []
+        #         for r in res:
+        #             res_2.append(r[0])
+        #         train_data.append(res_2)
         with codecs.open(filename, "r", encoding="utf-8") as infile:
-            for id, line in enumerate(infile):
+            train_data = []
+            for id, line in enumerate(infile.readlines()):
+                if id<2:
+                    continue
                 res = []
-                line = line.strip().split("\t")[2:]
-                for w in line:
-                    w = w.split("|")
-                    res.append((int(w[0]), int(w[1])))
-                res.sort(key=takeSecond)
-                res_2 = []
-                for r in res:
-                    res_2.append(r[0])
-                train_data.append(res_2)
-        
+                line = line.strip()
+                gender = list(map(int, line.split()[1]))[0]
+                i_t = [list(map(int,tmp.split("|"))) for tmp in line.split()[2:]]
+                # data = (line[0],line[1:])
+                data = [i for i,t in i_t]
+                train_data.append(data)
         self.raw_data = train_data
         self.adj, self.adj_single = self.preprocess(train_data, opt)
 

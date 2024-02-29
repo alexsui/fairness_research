@@ -308,12 +308,12 @@ class C2DSR(torch.nn.Module):
         self.item_emb_Y = torch.nn.Embedding(self.opt["itemnum"] + 1, self.opt["hidden_units"],
                                            padding_idx= self.opt["itemnum"] - 1)
         self.item_emb = torch.nn.Embedding(self.opt["itemnum"] + 1, self.opt["hidden_units"],
-                                           padding_idx= self.opt["itemnum"] - 1)   #opt["itemnum"] = opt["source_item_num"] + opt["target_item_num"] + 1
-        self.GNN_encoder_X = GCNLayer(opt)
-        self.GNN_encoder_Y = GCNLayer(opt)
-        self.GNN_encoder = GCNLayer(opt)
-        # self.adj = adj
-        # self.adj_single = adj_single
+                                           padding_idx = self.opt["itemnum"] - 1)   #opt["itemnum"] = opt["source_item_num"] + opt["target_item_num"] + 1
+        # self.GNN_encoder_X = GCNLayer(opt)
+        # self.GNN_encoder_Y = GCNLayer(opt)
+        # self.GNN_encoder = GCNLayer(opt)
+        self.adj = adj
+        self.adj_single = adj_single
         self.D_X = Discriminator(self.opt["hidden_units"], self.opt["hidden_units"])
         self.D_Y = Discriminator(self.opt["hidden_units"], self.opt["hidden_units"])
 
@@ -398,10 +398,11 @@ class C2DSR(torch.nn.Module):
         # self.single_emb_Y = self.GNN_encoder_Y(fea_Y, self.adj_single)
 
     def forward(self, o_seqs, x_seqs, y_seqs, position, x_position, y_position, ts_d=None, ts_xd=None, ts_yd=None): #_o_seqs為mixed domain seqs, _x_seqs為source domain seqs, _y_seqs為target domain seqs
-        # seqs = self.my_index_select(self.cross_emb, o_seqs) + self.item_emb(o_seqs)
+        
         if o_seqs is None:
             seqs_fea = None
         else:
+            # seqs = self.my_index_select(self.cross_emb, o_seqs) + self.item_emb(o_seqs)
             seqs = self.item_emb(o_seqs)
             # print("seqs.shape:", seqs.shape) #[B,sen_len,hidden_units]
             seqs *= self.item_emb.embedding_dim ** 0.5
@@ -410,6 +411,7 @@ class C2DSR(torch.nn.Module):
             x_seqs_fea = None
         else:
             # seqs = self.my_index_select(self.single_emb_X, x_seqs) + self.item_emb_X(x_seqs)
+            
             seqs = self.item_emb_X(x_seqs)
             seqs *= self.item_emb.embedding_dim ** 0.5
             x_seqs_fea = self.encoder_X(x_seqs, seqs, x_position, ts=ts_xd)

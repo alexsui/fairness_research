@@ -63,8 +63,8 @@ def main(args):
     
     if opt["training_mode"] not in ["pretrain","finetune","joint_learn","joint_pretrain","evaluation"]:
         raise ValueError("training mode must be pretrain, finetune, joint_learn or joint_pretrain")
-    if opt["training_mode"] in ["joint_learn","joint_pretrain","pretrain"] and opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster","group_CL"]:
-        raise ValueError("ssl must be mask_prediction, time_CL, augmentation_based_CL, no_ssl or proto_CL","triple_pull","NNCL","interest_cluster","group_CL")
+    if opt["training_mode"] in ["joint_learn","joint_pretrain","pretrain"] and opt["ssl"] not in ["mask_prediction","time_CL","augmentation_based_CL","no_ssl","proto_CL","triple_pull","NNCL","interest_cluster","group_CL","both"]:
+        raise ValueError("ssl must be mask_prediction, time_CL, augmentation_based_CL, no_ssl or proto_CL","triple_pull","NNCL","interest_cluster","group_CL","both")
     
     # read number of items
     def read_item(fname):
@@ -77,7 +77,7 @@ def main(args):
     if opt['data_augmentation']!="item_augmentation" and opt['data_augmentation']!="user_generation" and opt['data_augmentation'] is not None:
         raise ValueError("data augmentation must be item_augmentation or user_generation")
     # load item generator
-    if opt['data_augmentation'] == "item_augmentation" or opt['ssl']=="group_CL":
+    if opt['data_augmentation'] == "item_augmentation" or opt['ssl']=="group_CL" or opt['ssl']=="both":
         source_generator = Generator(opt, type='X')
         checkpoint = torch.load(f"./generator_model/{opt['data_dir']}/X/{str(opt['load_pretrain_epoch'])}/model.pt")    
         state_dict = checkpoint['model']
@@ -92,7 +92,7 @@ def main(args):
         mixed_generator.load_state_dict(state_dict)
         print("\033[01;32m Generator loaded! \033[0m")
     # use collator or not
-    if opt['ssl']=="group_CL" and opt["substitute_mode"]in ["IR","random"]:
+    if opt['ssl'] in ["group_CL","both"] and opt["substitute_mode"]in ["IR","random"]:
         collator = CLDataCollator(opt, eval=-1, mixed_generator=mixed_generator)
     else:
         collator = None
@@ -111,12 +111,11 @@ def main(args):
     
     
     
-    # train_data = "./fairness_dataset/" + filename + "/train.txt"
-    # G = GraphMaker(opt, train_data)
+    train_data = f"./fairness_dataset/{opt['dataset']}/" + filename + "/train.txt"
+    G = GraphMaker(opt, train_data)
     # adj, adj_single = G.adj, G.adj_single
     adj, adj_single = None, None
     # print("graph loaded!")
-
     # if opt["cuda"]:
     #     adj = adj.cuda()
     #     adj_single = adj_single.cuda()
@@ -163,11 +162,15 @@ def main(args):
             print("\033[01;34m Start joint learning... \033[0m\n")
         if  opt['training_mode']=="evaluation" and opt['evaluation_model'] is not None:
             print("\033[01;34m Start evaluation... \033[0m\n")
-            trainer.evaluate(test_batch, file_logger)
-            return
-        if opt['data_augmentation']=="item_augmentation" or opt['ssl']=="group_CL":
+            best_Y_test_male,best_Y_test_female = trainer.evaluate(test_batch, file_logger)
+            return best_Y_test_male,best_Y_test_female
+        if opt['data_augmentation']=="item_augmentation" or opt['ssl']in ["group_CL","both"]:
             trainer.generator = [source_generator, target_generator, mixed_generator]
         trainer.train(opt['num_epoch'], train_batch, valid_batch, test_batch, file_logger)
+        opt['evaluation_model'] = opt['id']
+        opt['id'] = opt['id'] + "_eval"
+        best_Y_test,best_Y_test_male,best_Y_test_female = trainer.evaluate(test_batch, file_logger)
+        return best_Y_test,best_Y_test_male,best_Y_test_female
     else:
         pretrainer = Pretrainer(opt, adj, adj_single)
         print("\033[01;32m Start pretraining... \033[0m\n")
@@ -231,8 +234,6 @@ if __name__ == '__main__':
     #MoCo
     parser.add_argument('--r',type=int,default=2048 ,help="queue size/negative sample") #warning : r must be divisible by batch_size
     parser.add_argument('--m',type=float,default=0.999 ,help="momentum update ratio for moco")
-    parser.add_argument('--num_cluster', type=str, default= '2000,3000,4000' ,help="number of clusters for kmeans")
-    parser.add_argument('--warmup_epoch', type=int, default= 15 ,help="warmup epoch for cluster")
     parser.add_argument('--mlp',type=bool,default=True ,help="use MoCo or not")
     parser.add_argument('--cross_weight',type=float,default=0.001 ,help="cross domain weight for proto CL")
     parser.add_argument('--num_proto_neg',type=int,default= 1280 ,help="intra domain weight for proto CL")
@@ -258,12 +259,18 @@ if __name__ == '__main__':
     parser.add_argument('--evaluation_model',type=str,default= None ,help="evaluation model")
     parser.add_argument('--domain',type=str,default= "cross" ,help="target only or cross domain")
     parser.add_argument('--topk',type=int,default= 10 ,help="topk item recommendation")
+    
+    #item insertion
     parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item to generate")    
     parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
+    parser.add_argument('--alpha',type=float,default= 0.5 ,help="insertion ration for DGSA")
+
     parser.add_argument('--generator_model',type=str,default= "X" ,help="generator model")
     parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment or not")
     #interest clustering
     parser.add_argument('--topk_cluster',type=str,default= 5 ,help="number of multi-view cluster")
+    parser.add_argument('--num_cluster', type=str, default= '2000,3000,4000' ,help="number of clusters for kmeans")
+    parser.add_argument('--warmup_epoch', type=int, default= 15 ,help="warmup epoch for cluster")
     # group CL
     parser.add_argument('--substitute_ratio',type=float,default= 0.2 ,help="substitute ratio")
     parser.add_argument('--substitute_mode',type=str,default= "IR" ,help="IR, attention_weight")

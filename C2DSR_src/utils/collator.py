@@ -23,7 +23,7 @@ class CLDataCollator:
             # augmented_yd = self.augment(batch[27])   
             augmented_xd, augmented_yd,augmented_d = self.decompose(augmented_d)  
             return (torch.LongTensor(batch[0]), torch.LongTensor(batch[1]), torch.LongTensor(batch[2]), torch.LongTensor(batch[3]),torch.LongTensor(batch[4]), torch.LongTensor(batch[5]), torch.LongTensor(batch[6]), torch.LongTensor(batch[7]),torch.LongTensor(batch[8]), torch.LongTensor(batch[9]), torch.LongTensor(batch[10]), torch.LongTensor(batch[11]), torch.LongTensor(batch[12]), torch.LongTensor(batch[13]), torch.LongTensor(batch[14]), torch.LongTensor(batch[15]), torch.LongTensor(batch[16]), torch.LongTensor(batch[17]),\
-                        torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]), torch.LongTensor(augmented_d),torch.LongTensor(augmented_xd),torch.LongTensor(augmented_yd),torch.LongTensor(batch[28]))
+                        torch.LongTensor(batch[18]),torch.LongTensor(batch[19]),torch.LongTensor(batch[20]),torch.LongTensor(batch[21]),torch.LongTensor(batch[22]),torch.LongTensor(batch[23]),torch.LongTensor(batch[24]),torch.LongTensor(batch[25]), torch.LongTensor(augmented_d),torch.LongTensor(augmented_xd),torch.LongTensor(augmented_yd),torch.LongTensor(batch[29]))
         elif self.eval == 2: #for  validation
             augmented_d = self.augment(batch[0])
             augmented_xd = self.augment(batch[1])
@@ -71,7 +71,7 @@ class CLDataCollator:
             target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
             probabilities = torch.nn.functional.softmax(target_fea, dim=1)
             if self.opt['substitute_mode'] in ["attention_weight","IR"]:
-                num_sample = 30
+                num_sample = 10
                 sampled_indices = torch.multinomial(probabilities, num_sample, replacement=False).squeeze() #[X,10]
                 ### insert highest female interaction ratio item from 10 item### 
                 mapping = torch.zeros(self.opt['source_item_num']+self.opt['target_item_num'],dtype=torch.float32).cuda()
@@ -136,7 +136,13 @@ class CLDataCollator:
                     values = np.array(list(pair.values()))
                     # sample item from the highest 50% male IR items
                     probabilities = np.exp(values - np.max(values)) / np.sum(np.exp(values - np.max(values)))
-                    sampled_pos = np.random.choice(len(values), size=max(int(item_seq_len * ratio), 1), replace=False, p=probabilities)
+                    size = max(int(item_seq_len * ratio), 1)
+                    if size > len(values):
+                        size = len(values)
+                    try:
+                        sampled_pos = np.random.choice(len(values), size=size, replace=False, p=probabilities)
+                    except:
+                        ipdb.set_trace()
                     selected_item = [k for i,(k,v) in enumerate(pair.items()) if i in sampled_pos]
                     substitute_idxs = np.where(item_seq == np.array(selected_item)[:, None])[1]
                 elif self.opt['substitute_mode'] =="random":

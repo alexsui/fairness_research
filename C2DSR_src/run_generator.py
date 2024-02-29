@@ -95,10 +95,9 @@ parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item t
 
 args, unknown = parser.parse_known_args()
 
-folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
+folder_list = glob.glob("./fairness_dataset/Movie_lens_final/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-# data_dir = ['adventure_thriller']
 print(data_dir)
 generate_types = ["X","Y","mixed"]
 time_encode = False
@@ -114,6 +113,7 @@ for data_idx in range(len(data_dir)):
         args.time_encode = time_encode
         args.warmup_epoch = warmup_epoch
         args.num_cluster = "2,3,4"
+        args.dataset = "Movie_lens_final"
         main(args)
 
  
