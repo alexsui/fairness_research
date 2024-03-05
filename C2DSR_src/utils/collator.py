@@ -13,12 +13,12 @@ class CLDataCollator:
                             'crop' : Crop(tao = opt["crop_prob"])}
         self.transform = self.augmentation[opt["augment_type"]]
         self.eval = eval
-        self.mixed_generator = mixed_generator
-        self.attribute_predictor = attribute_predictor
-        self.model = model
+        self.mixed_generator = mixed_generator #for all substitute_mode
+        self.attribute_predictor = attribute_predictor  # for substitute_mode = "attention_weight"
+        self.model = model # for substitute_mode = "attention_weight"
     def __call__(self, batch):
         if self.eval == -1: #for training
-            augmented_d = self.augment(batch[1],all_ts = batch[7], gender=batch[-1]) #[B,2,max_len]
+            augmented_d = self.augment_new(batch[1],all_ts = batch[7], gender=batch[-1]) #[B,2,max_len]
             # augmented_xd = self.augment(batch[26])
             # augmented_yd = self.augment(batch[27])   
             augmented_xd, augmented_yd,augmented_d = self.decompose(augmented_d)  
@@ -52,7 +52,7 @@ class CLDataCollator:
         return augmented_xd, augmented_yd,augmented_d
     def generate(self,seq, positions, timestamp, female_IR):
         
-        torch_seq = torch.LongTensor(seq) #[X,max_len]
+        torch_seq = torch.LongTensor(np.array(seq)) #[X,max_len]
         mask = torch_seq == self.opt['itemnum']
         torch_position = torch.LongTensor(positions) #[X,max_len]
         torch_ts = torch.LongTensor(timestamp) #[X,max_len]
@@ -70,7 +70,7 @@ class CLDataCollator:
             target_fea = seq_fea[mask]
             target_fea /= torch.max(target_fea, dim=1, keepdim=True)[0]
             probabilities = torch.nn.functional.softmax(target_fea, dim=1)
-            if self.opt['substitute_mode'] in ["attention_weight","IR"]:
+            if self.opt['substitute_mode'] in ["attention_weight","DGIR","AGIR","hybrid"]:
                 num_sample = 10
                 sampled_indices = torch.multinomial(probabilities, num_sample, replacement=False).squeeze() #[X,10]
                 ### insert highest female interaction ratio item from 10 item### 
@@ -80,15 +80,160 @@ class CLDataCollator:
                 selected_idx_index = mapping[sampled_indices].argmax(dim=-1)
                 sampled_indices = sampled_indices[torch.arange(len(sampled_indices)),selected_idx_index]
             elif self.opt['substitute_mode'] == "random":
-                sampled_indices = torch.multinomial(probabilities, 1, replacement=False).squeeze()
-            if type =="Y":
-                sampled_indices = sampled_indices + self.opt['source_item_num']
+                # sampled_indices = torch.multinomial(probabilities, 1, replacement=False).squeeze()
+                num_sample = 10
+                sampled_indices = torch.multinomial(probabilities, num_sample, replacement=False).squeeze()
+                selected_idx_index = torch.randint(0, num_sample, (len(sampled_indices),))
+                sampled_indices = sampled_indices[torch.arange(len(sampled_indices)),selected_idx_index]
+            # if type =="Y":
+            #     sampled_indices = sampled_indices + self.opt['source_item_num']
             torch_seq[mask] = sampled_indices
             new_seq = torch_seq.tolist() 
        
         # new_seq = [(g,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for g, sublist, timestamp in zip(gender, new_seq, torch_ts.tolist())]
         return new_seq
-        
+    def augment_new(self,item_seqs, all_ts, gender):
+        with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/male_IR.json","r") as f:
+            male_IR = json.load(f)
+        with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/female_IR.json","r") as f:
+            female_IR = json.load(f)
+        ratio = self.opt['substitute_ratio']
+        augmented_d = []
+        for _ in range(2):
+            if self.attribute_predictor is not None and self.model is not None and self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
+                gender_mask = torch.tensor(gender)[:,0]==1
+                item_seqs = torch.tensor(item_seqs).clone().detach()
+                item_seqs = item_seqs.cuda() if self.opt['cuda'] else item_seqs
+                seqs_fea = get_item_embedding_for_sequence(self.opt,item_seqs,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
+                self.attribute_predictor.eval()
+                with torch.no_grad():
+                    _, weight = self.attribute_predictor(seqs_fea)
+                    weight = weight.squeeze()
+                    item_seqs= item_seqs.squeeze()
+                    mask = (item_seqs!=(self.opt['source_item_num'] + self.opt['target_item_num']))
+                    item_seq_len = mask.int().sum(dim=-1)
+                    #將padding item的attention weight設為-inf
+                    filtered_weight = torch.where(mask, weight, torch.tensor(float('-inf')).to(weight.device))
+
+                    #取最高的一半 attention weight 的indices
+                    sorted_indices = torch.argsort(filtered_weight, dim=1,descending=True)
+                    male_sorted_indices = sorted_indices[gender_mask]
+                    female_sorted_indices = sorted_indices[~gender_mask]
+                    male_sorted_idx = [indices[:item_seq_len[i]//2] for i,indices in enumerate(male_sorted_indices.tolist())]
+                    female_sorted_idx = [indices[item_seq_len[i]//2:item_seq_len[i]] for i,indices in enumerate(female_sorted_indices.tolist())]
+                    male_item_seqs = item_seqs[gender_mask]
+                    female_item_seqs = item_seqs[~gender_mask]
+                    new_positions = []
+                    new_seqs = []
+                    def get_new_seq(sorted_idx,item_seqs,gender):
+                        max_len = max([len(i) for i in sorted_idx]) 
+                        #取最高的一半 attention weight，長度不足的部分補-inf(確保過softmax後機率為0不會被選到)            
+                        values = torch.tensor([w[i].tolist() + [float('-inf')]*(max_len-len(i))for w,i in zip(weight,sorted_idx)]).to(weight.device)
+                        if self.opt['substitute_mode'] == "hybrid":
+                            IR_val = []
+                            for i,item_seq in enumerate(item_seqs):
+                                item_seq = item_seq[sorted_idx[i]]
+                                if gender==1:
+                                    item_IR = {item.item():male_IR[str(item.item())] if str(item.item()) in male_IR.keys() else 0 for item in item_seq}
+                                else:
+                                    item_IR = {item.item():female_IR[str(item.item())] if str(item.item()) in female_IR.keys() else 0 for item in item_seq}
+                                value = list(item_IR.values())
+                                IR_val.append(value+[float('-inf')]*(max_len-len(value)))
+                            IR_val = torch.tensor(IR_val).to(weight.device)
+                            mask = IR_val==float('-inf')
+                            if gender==1:  
+                                # ranking
+                                IR_val_rank = IR_val.argsort().argsort()
+                                values_rank = values.argsort().argsort()
+                                values = (values_rank+1)*(IR_val_rank+1)
+                                
+                                #harmonic mean
+                                # values = 2 * (IR_val * values) / (IR_val + values + 1e-6)
+                                
+                            else:
+                                # ranking
+                                IR_val[mask] = float('nan')
+                                values[mask] = float('nan')
+                                IR_val_rank = (IR_val*-1).argsort().argsort()
+                                values_rank = (values*-1).argsort().argsort()
+                                values = (values_rank+1)*(IR_val_rank+1)
+                                
+                                #harmonic mean
+                                # epsilon = 1e-6  # Small number to avoid division by zero
+                                # Transform A and B by taking the reciprocal
+                                # A_prime = 1 / (IR_val + epsilon)
+                                # B_prime = 1 / (values + epsilon)
+                                # values = 2 * (A_prime * B_prime) / (A_prime + B_prime + 1e-6)
+                            values = values.float()
+                            values[mask] = float('inf')
+                            min_ = values.min(dim=1, keepdim=True).values
+                            values[mask] = float('-inf')
+                            max_ = values.max(dim=1, keepdim=True).values
+                            values = (values-min_)/(max_-min_+1e-9)
+                        #sample item from the highest 50% attention weight items
+                        probabilities = torch.nn.functional.softmax(values, dim=1)
+                        seleted_idx = [torch.tensor(sorted_idx[i]).to(weight.device)[torch.multinomial(p, max(int(item_seq_len[i] * ratio),1), replacement=False)].tolist() for i,p in enumerate(probabilities)]
+                        selected_item = [seq[idx].cpu().detach().numpy() for seq,idx in zip(item_seqs,seleted_idx)]
+                        item_seqs = item_seqs.clone().cpu().detach().numpy()
+                        for i,seq in enumerate(item_seqs):
+                            try:
+                                substitute_idxs = np.where(seq ==selected_item[i][:, None])[1] #more than one item
+                            except:
+                                substitute_idxs = np.where(item_seqs ==selected_item[i])[0] #only one item
+                            seq[substitute_idxs] = self.opt['itemnum']
+                            position = [0]*(self.opt['maxlen']-item_seq_len[i]) + list(range(item_seq_len[i]+1)[1:])[-self.opt['maxlen']:]
+                            new_seq = seq[-self.opt['maxlen']:]
+                            new_seqs.append(new_seq)
+                            new_positions.append(position)
+                    get_new_seq(male_sorted_idx,male_item_seqs,1)
+                    get_new_seq(female_sorted_idx,female_item_seqs,0)
+            else:
+                new_seqs = []
+                new_positions = []
+                for i in range(len(item_seqs)):
+                    item_seq = np.array(item_seqs[i].copy())
+                    item_seq_len = len(item_seq[item_seq!=(self.opt['source_item_num'] + self.opt['target_item_num'])])
+                    if self.opt['substitute_mode'] in ["AGIR","DGIR"]:
+                        # choose the highest 50% male IR items or lowest 50% female IR items
+                        if self.opt['substitute_mode']=="AGIR":
+                            item_IR = {item:male_IR[str(item)] if str(item) in male_IR.keys() else 0 for item in item_seq}
+                            pair = dict(sorted(item_IR.items(), key=lambda item: item[1], reverse=True)[:item_seq_len//2])
+                        elif self.opt['substitute_mode']=="DGIR":
+                            item_IR = {item:female_IR[str(item)] if str(item) in female_IR.keys() else 0 for item in item_seq}
+                            pair = dict(sorted(item_IR.items(), key=lambda item: item[1], reverse=True)[item_seq_len//2:])    
+                        
+                        values = np.array(list(pair.values()))
+                        # sample item from the highest 50% male IR items or lowest 50% female IR items
+                        probabilities = np.exp(values - np.max(values)) / np.sum(np.exp(values - np.max(values)))
+                        size = max(int(item_seq_len * ratio), 1)
+                        if size > len(values):
+                            size = len(values)
+                        try:
+                            sampled_pos = np.random.choice(len(values), size=size, replace=False, p=probabilities)
+                        except:
+                            ipdb.set_trace()
+                        selected_item = [k for i,(k,v) in enumerate(pair.items()) if i in sampled_pos]
+                        substitute_idxs = np.where(item_seq == np.array(selected_item)[:, None])[1]
+                    elif self.opt['substitute_mode'] =="random":
+                        substitute_idxs = np.random.choice(item_seq_len, max(int(item_seq_len * ratio), 1), replace=False)
+                    else:
+                        raise ValueError("substitute_mode should be attention_weight or AGIR, DGIR, hybrid")
+                    for index in substitute_idxs:
+                        item_seq[index] = self.opt['itemnum']
+                    position = [0]*(self.opt['maxlen']-item_seq_len) + list(range(item_seq_len+1)[1:])[-self.opt['maxlen']:]
+                    new_seq = item_seq.tolist()[-self.opt['maxlen']:]
+                    xd = [j for j in new_seq if j < self.opt['source_item_num']]
+                    yd = [j for j in new_seq if j >= self.opt['source_item_num'] and j != self.opt['source_item_num'] + self.opt['target_item_num']]
+                    # if len(xd) == 0 or len(yd) == 0:
+                    #     skip_id.append(i)
+                    #     continue
+                    new_seqs.append(new_seq)
+                    new_positions.append(position)
+            augmented_seq= self.generate(new_seqs, new_positions, all_ts, female_IR)
+            augmented_d.append(augmented_seq)
+            # augmented_xd.append([[i for i in seq if i < self.opt['source_item_num']] for seq in new_seq])
+            # augmented_yd.append([[i for i in seq if i >= self.opt['source_item_num']] for seq in new_seq])
+        return augmented_d
     def augment(self,item_seqs, all_ts, gender):
         with open(f"./fairness_dataset/{self.opt['dataset']}/{self.opt['data_dir']}/male_IR.json","r") as f:
             male_IR = json.load(f)
@@ -112,6 +257,7 @@ class CLDataCollator:
                     item_seq = item_seq.cuda() if self.opt['cuda'] else item_seq
                     seqs_fea = get_item_embedding_for_sequence(self.opt,item_seq,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
                     _, weight = self.attribute_predictor(seqs_fea)
+                    ipdb.set_trace()
                     weight = weight.squeeze()
                     item_seq= item_seq.squeeze()
                     mask = item_seq!=(self.opt['source_item_num'] + self.opt['target_item_num'])

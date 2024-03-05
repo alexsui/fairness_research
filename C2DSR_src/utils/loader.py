@@ -21,7 +21,7 @@ class DataLoader(DataLoader):
     """
     Load data from json files, preprocess and prepare batches.
     """
-    def __init__(self, filename, batch_size, opt, evaluation, collate_fn = None, generator = None, model = None):
+    def __init__(self, filename, batch_size, opt, evaluation, collate_fn = None, generator = None, model = None,balanced =False):
         self.batch_size = batch_size
         self.opt = opt
         self.eval = evaluation
@@ -50,13 +50,15 @@ class DataLoader(DataLoader):
 
         if evaluation < 0:
             self.train_data = self.read_train_data(source_train_data)
-            if self.opt['data_augmentation']=="user_generation" and self.model is not None:
+            if (self.opt['data_augmentation']=="user_generation" and self.model is not None) or balanced:
                 self.overlap_user_generation()
-            if self.opt['data_augmentation']=="item_augmentation" and generator is not None:
+            if (self.opt['data_augmentation']=="item_augmentation" and generator is not None) :
                 self.item_generate_female()
             data = self.preprocess()
             self.num_examples = len(data)
-            
+            # ipdb.set_trace()
+            self.female_data = [d for d in data if d[-1][0]==0]
+            self.male_data = [d for d in data if d[-1][0]==1]
             self.all_data = data
             print("number of train_data:",len(data))
         elif evaluation == 2:
@@ -85,6 +87,7 @@ class DataLoader(DataLoader):
         # chunk into batches
         data = [data[i:i+batch_size] for i in range(0, len(data), batch_size)]
         self.data = data
+        # ipdb.set_trace()
     def overlap_user_generation(self):
         print("*"*50)
         print("\033[33mOverlap user generation\033[0m")
@@ -106,24 +109,24 @@ class DataLoader(DataLoader):
                     item_seq = item_seq.cuda()
                     
                 ### pick similar sequential item ###
-                embedding = self.model.item_emb(item_seq)# [10, 50, 128]
-                vectors_i = embedding[:, :-1, :].permute(1,0,2)    # [49, 10, 128]
-                vectors_i_plus_1 = embedding[:, 1:, :].permute(1,2,0)  # [49, 128, 10]
-                sim = vectors_i@vectors_i_plus_1 #[49, 10, 10] 
-                topk_idx = torch.topk(sim,3, dim=2)[1] #[49, 10, 5] 
-                # all_idx = torch.argmax(sim, dim=2) #[49, 10] 
-                cur = random.randint(0, item_seq.size(0)-1)
-                cur = 0
-                selected_idx = [cur]
-                for idx in topk_idx:
-                    i = random.randint(0, 2)
-                    selected_idx.append(idx[cur,i].item())
-                    cur = idx[cur,i].item()
-                item_seq = item_seq[selected_idx, torch.arange(item_seq.size(-1))] 
+                # embedding = self.model.item_emb(item_seq)# [10, 50, 128]
+                # vectors_i = embedding[:, :-1, :].permute(1,0,2)    # [49, 10, 128]
+                # vectors_i_plus_1 = embedding[:, 1:, :].permute(1,2,0)  # [49, 128, 10]
+                # sim = vectors_i@vectors_i_plus_1 #[49, 10, 10] 
+                # topk_idx = torch.topk(sim,3, dim=2)[1] #[49, 10, 5] 
+                # # all_idx = torch.argmax(sim, dim=2) #[49, 10] 
+                # cur = random.randint(0, item_seq.size(0)-1)
+                # cur = 0
+                # selected_idx = [cur]
+                # for idx in topk_idx:
+                #     i = random.randint(0, 2)
+                #     selected_idx.append(idx[cur,i].item())
+                #     cur = idx[cur,i].item()
+                # item_seq = item_seq[selected_idx, torch.arange(item_seq.size(-1))] 
                 
                 ### random pick item per position ###
-                # indices = torch.randint(item_seq.size(0), (item_seq.size(-1),)) 
-                # item_seq = item_seq[indices, torch.arange(item_seq.size(-1))]  
+                indices = torch.randint(item_seq.size(0), (item_seq.size(-1),)) 
+                item_seq = item_seq[indices, torch.arange(item_seq.size(-1))]  
                 
                 new_item_seq = item_seq[item_seq!=self.opt["source_item_num"] + self.opt["target_item_num"]]
                 if len([s for s in new_item_seq if s >= self.opt["source_item_num"]]) <3:

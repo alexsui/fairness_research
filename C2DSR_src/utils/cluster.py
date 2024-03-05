@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import ipdb
-def run_kmeans(x, opt):
+def run_kmeans(x, opt, gender):
     """
     Args:
         x: data to be clustered
@@ -11,8 +11,13 @@ def run_kmeans(x, opt):
     
     print('performing kmeans clustering')
     results = {'im2cluster':[], 'centroids':[], 'density':[]}
-    
-    for seed, num_cluster in enumerate(opt['num_cluster']):
+    if gender=="male":
+        num_cluster =opt['num_cluster'][0]
+    elif gender == "female":
+        num_cluster =opt['num_cluster'][1]
+    else:
+        num_cluster =opt['num_cluster'][2]
+    for seed, num_cluster in enumerate([num_cluster]):
         # intialize faiss clustering parameters
         d = x.shape[1]
         k = int(num_cluster)

@@ -173,8 +173,6 @@ def get_embedding_for_ssl(opt , data, encoder, item_embed, projector =None,
     batch_size = data.shape[0]
     non_zero_mask = (data != (opt["source_item_num"] +opt["target_item_num"])).long()
     position_id = non_zero_mask.cumsum(dim=-1) * non_zero_mask
-    # ipdb.set_trace()
-    # ipdb.set_trace()
     seqs = item_embed(data)
     feat = encoder(data, seqs, position_id, ts=ts, causality_mask = encoder_causality_mask)
     if opt["pooling"] == "bert":
@@ -215,6 +213,7 @@ def get_item_embedding_for_sequence(opt, data, encoder, item_embed, CL_projector
     non_zero_mask = (data != (opt["source_item_num"] +opt["target_item_num"])).long()
     position_id = non_zero_mask.cumsum(dim=1) * non_zero_mask
     seqs = item_embed(data)
+    # ipdb.set_trace()
     seq_feature = encoder(data, seqs, position_id,  causality_mask = encoder_causality_mask)
     if cl:
         seq_feature = CL_projector(seq_feature)

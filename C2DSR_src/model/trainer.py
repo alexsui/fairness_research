@@ -15,6 +15,7 @@ from pathlib import Path
 from utils import torch_utils
 from model.C2DSR import C2DSR
 from model.MoCo import MoCo
+from model.MoCo_new import MoCo_Interest
 from model.NNCL import NNCL
 from utils.MoCo_utils import compute_features, compute_embedding_for_target_user,compute_features_for_I2C
 from utils.cluster import run_kmeans
@@ -675,9 +676,11 @@ class CDSRTrainer(Trainer):
         self.proto_criterion = nn.CrossEntropyLoss()
         self.val_criterion = nn.CrossEntropyLoss(reduction='none')
         
-        self.MoCo_X = MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "X")
-        self.MoCo_Y = MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "Y")
-        self.MoCo_mixed =MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "mixed")
+        # self.MoCo_X = MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "X")
+        # self.MoCo_Y = MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "Y")
+        # self.MoCo_mixed =MoCo(opt, self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'], domain = "mixed")
+        if self.opt['ssl'] in ['interest_cluster','both']:
+            self.MoCo_Interest =MoCo_Interest(opt, self.model, T = opt['temp'])
         self.NNCL = NNCL(opt,self.model, dim = opt['hidden_units'], r = opt['r'], m = opt['m'], T = opt['temp'], mlp = opt['mlp'])
         ###adversarial learning###
         self.gender_discriminator = GenderDiscriminator(self.opt)
@@ -686,25 +689,26 @@ class CDSRTrainer(Trainer):
         
         ###Istance to cluster Contrastive Learning###
         if self.opt['ssl'] in ['interest_cluster','both']:
-            self.male_cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][0], topk = opt['topk_cluster'])
-            self.female_cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][1], topk = opt['topk_cluster'])
-            # self.cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][2], topk = opt['topk_cluster'])
+            if self.opt['cluster_mode'] =="separate":
+                self.male_cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][0], topk = opt['topk_cluster'])
+                self.female_cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][1], topk = opt['topk_cluster'])
+            elif self.opt['cluster_mode'] == "joint":
+                self.cluster = ClusterRepresentation(opt,opt['hidden_units'], opt['num_cluster'][2], topk = opt['topk_cluster'])
         if opt['cuda']:
             self.model = self.model.cuda()
             self.BCE_criterion = self.BCE_criterion.cuda()
             self.CS_criterion = self.CS_criterion.cuda()
             self.CL_criterion = self.CL_criterion.cuda()
             self.proto_criterion = self.proto_criterion.cuda()
-            self.MoCo_X = self.MoCo_X.cuda()
-            self.MoCo_Y = self.MoCo_Y.cuda()
-            self.MoCo_mixed = self.MoCo_mixed.cuda()
             self.NNCL = self.NNCL.cuda()
             self.gender_discriminator = self.gender_discriminator.cuda()
            
             if self.opt['ssl'] in ['interest_cluster','both']:
-                self.male_cluster = self.male_cluster.cuda()
-                self.female_cluster = self.female_cluster.cuda()
-                # self.cluster = self.cluster.cuda()
+                if self.opt['cluster_mode'] =="separate":
+                    self.male_cluster = self.male_cluster.cuda()
+                    self.female_cluster = self.female_cluster.cuda()
+                elif self.opt['cluster_mode'] == "joint":
+                    self.cluster = self.cluster.cuda()
         if self.opt['param_group'] : 
             param_name = []
             for name, param in self.model.named_parameters():
@@ -719,8 +723,10 @@ class CDSRTrainer(Trainer):
                                                     opt['lr'])
         else:
             if self.opt['training_mode'] == 'joint_learn' and self.opt['ssl'] in ['interest_cluster','both']: 
-                self.optimizer = torch_utils.get_optimizer(opt['optim'], list(self.model.parameters())+list(self.male_cluster.parameters())+list(self.female_cluster.parameters()), opt['lr'])
-                # self.optimizer = torch_utils.get_optimizer(opt['optim'], list(self.model.parameters())+list(self.cluster.parameters()), opt['lr'])
+                if self.opt['cluster_mode'] =="separate":
+                    self.optimizer = torch_utils.get_optimizer(opt['optim'], list(self.model.parameters())+list(self.male_cluster.parameters())+list(self.female_cluster.parameters()), opt['lr'])
+                elif self.opt['cluster_mode'] == "joint":
+                    self.optimizer = torch_utils.get_optimizer(opt['optim'], list(self.model.parameters())+list(self.cluster.parameters()), opt['lr'])
 
             else:
                 self.optimizer = torch_utils.get_optimizer(opt['optim'],self.model.parameters(), opt['lr'])
@@ -1079,53 +1085,110 @@ class CDSRTrainer(Trainer):
         # pred_female_seq = seq[torch.round(pred)==0]
         # sorted_idx = weight.argsort(dim=1)[:,-10:] #ascending order
         # pred_female_seq[torch.arange(len(pred_female_seq))[:, None], sorted_idx]
+    def I2C_CL_Kmeans(self, index, mixed_seq, target_seq, ts_d, ts_yd, gender,cluster_result):
+        ts_d = ts_d if self.opt['time_encode'] else None
+        ts_yd = ts_yd if self.opt['time_encode'] else None
+        cluster_result_mixed, cluster_result_male_mixed, cluster_result_female_mixed = cluster_result[0], cluster_result[1], cluster_result[2]
+        if self.opt['cluster_mode'] == "joint":
+            logits= self.MoCo_Interest(mixed_seq, target_seq, cluster_result = cluster_result_mixed, index = index,ts =ts_d)
+            log_probabilities = F.log_softmax(logits[0] / self.opt['temp'], dim=1)
+            positive_log_probabilities = log_probabilities[:, :self.opt['topk_cluster']]
+            loss = -positive_log_probabilities.mean(dim=1).mean()
+            return loss
+        elif self.opt['cluster_mode'] == "separate":
+            gender = gender[:,0]
+            target_male_seq = target_seq[gender==1]
+            target_female_seq = target_seq[gender==0]
+            mixed_male_seq = mixed_seq[gender==1]
+            mixed_female_seq = mixed_seq[gender==0]
+            
+            male_logits = self.MoCo_Interest(mixed_male_seq, target_male_seq, cluster_result = cluster_result_male_mixed, index = index,ts =ts_d)
+            female_logits = self.MoCo_Interest(mixed_female_seq, target_female_seq, cluster_result = cluster_result_female_mixed, index = index,ts =ts_d)
+            # if the number of clusters for male and female are equal
+            if self.opt['num_cluster'][0] == self.opt['num_cluster'][1]:
+                logits = torch.cat([male_logits[0],female_logits[0]],dim=0)
+                log_probabilities = F.log_softmax(logits / self.opt['temp'], dim=1)
+                positive_log_probabilities = log_probabilities[:, :self.opt['topk_cluster']]
+                loss = -positive_log_probabilities.mean(dim=1).mean()
+            else:
+                male_log_probabilities = F.log_softmax(male_logits[0] / self.opt['temp'], dim=1)
+                male_positive_log_probabilities = male_log_probabilities[:, :self.opt['topk_cluster']]
+                male_loss = -male_positive_log_probabilities.mean(dim=1).mean()
+                female_log_probabilities = F.log_softmax(female_logits[0] / self.opt['temp'], dim=1)
+                female_positive_log_probabilities = female_log_probabilities[:, :self.opt['topk_cluster']]
+                female_loss = -female_positive_log_probabilities.mean(dim=1).mean()
+                loss = male_loss + female_loss
+            return loss      
+        else:
+            raise ValueError("cluster_mode should be joint or separate")
     def I2C_CL(self, index, mixed_seq, target_seq, ts_d, ts_yd, gender):
         ts_d = ts_d if self.opt['time_encode'] else None
         ts_yd = ts_yd if self.opt['time_encode'] else None
-        # mixed_feature = get_embedding_for_ssl(self.opt , mixed_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
-        # target_feature = get_embedding_for_ssl(self.opt , target_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
-        # new_cluster, multi_interest = self.cluster(mixed_feature)
-        # pos = torch.sum(multi_interest*target_feature,dim=1,keepdim=True)
-        # neg = target_feature@new_cluster.T
-        # logits = torch.cat([pos,neg],dim=1)
-
-        gender = gender[:,0]
-        target_male_seq = target_seq[gender==1]
-        target_female_seq = target_seq[gender==0]
-        mixed_male_seq = mixed_seq[gender==1]
-        mixed_female_seq = mixed_seq[gender==0]
-        ts_d = ts_d if self.opt['time_encode'] else None
-        ts_yd = ts_yd if self.opt['time_encode'] else None
-        mixed_male_feature = get_embedding_for_ssl(self.opt , mixed_male_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
-        mixed_female_feature = get_embedding_for_ssl(self.opt , mixed_female_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
-        target_male_feature = get_embedding_for_ssl(self.opt , target_male_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
-        target_female_feature = get_embedding_for_ssl(self.opt , target_female_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
-        new_male_cluster, male_multi_interest = self.male_cluster(mixed_male_feature)
-        new_female_cluster, female_multi_interest = self.female_cluster(mixed_female_feature)
-        new_male_cluster =torch.nn.functional.normalize(new_male_cluster, dim=1)
-        male_multi_interest = torch.nn.functional.normalize(male_multi_interest, dim=1)
-        new_female_cluster =torch.nn.functional.normalize(new_female_cluster, dim=1)
-        female_multi_interest = torch.nn.functional.normalize(female_multi_interest, dim=1)
-        male_pos = torch.sum(male_multi_interest*target_male_feature,dim=1,keepdim=True)
-        female_pos = torch.sum(female_multi_interest*target_female_feature, dim=1,keepdim=True)
-        male_neg = target_male_feature@new_male_cluster.T
-        female_neg  = target_female_feature@new_female_cluster.T
-        male_logits = torch.cat([male_pos, male_neg],dim=1)
-        female_logits = torch.cat([female_pos, female_neg],dim=1)
-        logits = torch.cat([male_logits,female_logits],dim=0)
-        
-        logits = logits/self.opt['temp']
-        labels = torch.zeros(logits.shape[0], dtype=torch.long)
-        if self.opt['cuda']:
-            labels = labels.cuda() 
-        loss = self.CL_criterion(logits, labels)
-        return loss
+        if self.opt['cluster_mode'] == "joint":
+            mixed_feature = get_embedding_for_ssl(self.opt , mixed_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
+            target_feature = get_embedding_for_ssl(self.opt , target_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
+            new_cluster, multi_interest = self.cluster(mixed_feature)
+            # pos = torch.sum(multi_interest*target_feature,dim=1,keepdim=True)
+            pos = torch.einsum('nc,nkc->nk', [target_feature, multi_interest])
+            neg = target_feature@new_cluster.T
+            logits = torch.cat([pos,neg],dim=1)
+            log_probabilities = F.log_softmax(logits / self.opt['temp'], dim=1)
+            positive_log_probabilities = log_probabilities[:, :self.opt['topk_cluster']]
+            loss = -positive_log_probabilities.mean(dim=1).mean()
+            return loss
+        elif self.opt['cluster_mode'] == "separate":
+            gender = gender[:,0]
+            target_male_seq = target_seq[gender==1]
+            target_female_seq = target_seq[gender==0]
+            mixed_male_seq = mixed_seq[gender==1]
+            mixed_female_seq = mixed_seq[gender==0]
+            mixed_male_feature = get_embedding_for_ssl(self.opt , mixed_male_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
+            mixed_female_feature = get_embedding_for_ssl(self.opt , mixed_female_seq, self.model.encoder, self.model.item_emb,ts=ts_d, projector = self.model.interest_projector)
+            target_male_feature = get_embedding_for_ssl(self.opt , target_male_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
+            target_female_feature = get_embedding_for_ssl(self.opt , target_female_seq, self.model.encoder_Y, self.model.item_emb_Y,ts=ts_yd,projector=self.model.interest_projector_Y)
+            new_male_cluster, male_multi_interest = self.male_cluster(mixed_male_feature)
+            new_female_cluster, female_multi_interest = self.female_cluster(mixed_female_feature)
+            # ipdb.set_trace()
+            new_male_cluster =torch.nn.functional.normalize(new_male_cluster, dim=-1)
+            male_multi_interest = torch.nn.functional.normalize(male_multi_interest, dim=-1)
+            new_female_cluster =torch.nn.functional.normalize(new_female_cluster, dim=-1)
+            female_multi_interest = torch.nn.functional.normalize(female_multi_interest, dim=-1)
+            male_pos = torch.einsum('nc,nkc->nk', [target_male_feature, male_multi_interest])
+            female_pos = torch.einsum('nc,nkc->nk', [target_female_feature, female_multi_interest])
+            # male_pos = torch.sum(male_multi_interest*target_male_feature,dim=1,keepdim=True)
+            # female_pos = torch.sum(female_multi_interest*target_female_feature, dim=1,keepdim=True)
+            male_neg = target_male_feature@new_male_cluster.T
+            female_neg = target_female_feature@new_female_cluster.T
+            
+            male_logits = torch.cat([male_pos, male_neg],dim=1)
+            female_logits = torch.cat([female_pos, female_neg],dim=1)
+            # if the number of clusters for male and female are equal
+            if self.opt['num_cluster'][0] == self.opt['num_cluster'][1]:
+                logits = torch.cat([male_logits,female_logits],dim=0)
+                # logits = logits/self.opt['temp']
+                # labels = torch.zeros(logits.shape[0], dtype=torch.long)
+                # if self.opt['cuda']:
+                #     labels = labels.cuda() 
+                # loss = self.CL_criterion(logits, labels)
+                log_probabilities = F.log_softmax(logits / self.opt['temp'], dim=1)
+                positive_log_probabilities = log_probabilities[:, :self.opt['topk_cluster']]
+                loss = -positive_log_probabilities.mean(dim=1).mean()
+            else:
+                male_log_probabilities = F.log_softmax(male_logits / self.opt['temp'], dim=1)
+                male_positive_log_probabilities = male_log_probabilities[:, :self.opt['topk_cluster']]
+                male_loss = -male_positive_log_probabilities.mean(dim=1).mean()
+                female_log_probabilities = F.log_softmax(female_logits / self.opt['temp'], dim=1)
+                female_positive_log_probabilities = female_log_probabilities[:, :self.opt['topk_cluster']]
+                female_loss = -female_positive_log_probabilities.mean(dim=1).mean()
+                loss = male_loss + female_loss
+            return loss      
+        else:
+            raise ValueError("cluster_mode should be joint or separate")
     def train_batch(self, epoch, batch, i, cluster_result):
         self.model.train()
         self.optimizer.zero_grad()
         self.d_optimizer.zero_grad()
         self.model.graph_convolution()
-        cluster_result_X, cluster_result_Y, cluster_result_cross = cluster_result[0], cluster_result[1], cluster_result[2]
         index, seq, x_seq, y_seq, position, x_position, y_position, ts_d, ts_xd, ts_yd, ground, share_x_ground, share_y_ground, x_ground, y_ground, ground_mask, share_x_ground_mask, share_y_ground_mask, x_ground_mask, y_ground_mask, corru_x, corru_y,masked_xd, neg_xd, masked_yd, neg_yd, augmented_d, augmented_xd,augmented_yd,gender = self.unpack_batch(batch)
         if self.opt['training_mode'] =="joint_learn":
             # time_CL
@@ -1157,11 +1220,12 @@ class CDSRTrainer(Trainer):
             if self.opt['ssl'] == "NNCL":
                 NNCL_loss = self.NNCL(x_seq, y_seq)
             if self.opt['ssl'] in ['interest_cluster','both']:
-                if epoch+1>=self.opt['warmup_epoch']:
-                    I2C_loss = self.I2C_CL(index,seq, y_seq,ts_d,ts_yd,gender)
+                if epoch>=self.opt['warmup_epoch']:
+                    # I2C_loss = self.I2C_CL(index,seq, y_seq,ts_d,ts_yd,gender)
+                    I2C_loss = self.I2C_CL_Kmeans(index, seq, y_seq, ts_d, ts_yd, gender, cluster_result)
                     # print(f"\033[34mI2C_loss:{I2C_loss}\033[0m")
                 else:
-                    I2C_loss = torch.Tensor([0]).cuda()
+                    I2C_loss = torch.Tensor([0]).cuda() if self.opt['cuda'] else torch.Tensor([0])
             if self.opt['ssl'] in ["both","group_CL"]:
                 group_CL_loss = self.group_CL(augmented_d,augmented_xd,augmented_yd)
         if self.opt['domain'] =="single":
@@ -1433,9 +1497,11 @@ class CDSRTrainer(Trainer):
         #     if param.requires_grad and i==0 and j==0:
         #         print(name, param.data)
         return loss.item(), adv_loss.item() if adv_loss else None, dis_loss.item() if dis_loss else None
-    def pretrain_discriminator(self,dataloader):
+    def pretrain_discriminator(self):
         self.gender_discriminator.train()
-        for epoch in range(30):
+        for epoch in range(20):
+            # train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator, balanced =True)
+            dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, model = self.model, balanced =True)            
             batch_dis_loss = 0
             batch_dis_acc = 0
             batch_predict_male_num = 0
@@ -1451,18 +1517,17 @@ class CDSRTrainer(Trainer):
                 # y_seqs_fea = get_item_embedding_for_sequence(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = False,cl =False)
                 pred, _ = self.gender_discriminator(seqs_fea)
                 pred = pred.squeeze()
-                weight = []    
-                for g in gender:
-                    g = g[0]
-                    if g==0:
-                        weight.append(3)
-                    else:
-                        weight.append(1)
-                weight = torch.tensor(weight).cuda() if self.opt['cuda'] else torch.tensor(weight)
-                weight = weight.float().unsqueeze(-1)
+                # weight = []    
+                # for g in gender:
+                #     g = g[0]
+                #     if g==0:
+                #         weight.append(3)
+                #     else:
+                #         weight.append(1)
+                # weight = torch.tensor(weight).cuda() if self.opt['cuda'] else torch.tensor(weight)
+                # weight = weight.float().unsqueeze(-1)
                 dis_loss = self.BCE_criterion(pred,gender[:,0].float())
-                dis_loss = (dis_loss*weight).sum()/weight.sum()
-                
+                # dis_loss = (dis_loss*weight).sum()/weight.sum()
                 dis_loss.backward()
                 self.d_optimizer.step()
                 acc = (torch.round(pred)== gender[:,0]).sum()/len(pred)
@@ -1497,10 +1562,11 @@ class CDSRTrainer(Trainer):
         train_in_domain_CL_loss = []
         val_pred_loss_X = []
         val_pred_loss_Y = []
-        if self.opt['ssl'] in ['group_CL','both'] and self.opt['training_mode'] == "joint_learn" and self.opt['substitute_mode']=="attention_weight":
-            self.pretrain_discriminator(train_dataloader)
+        if self.opt['ssl'] in ['group_CL','both'] and self.opt['training_mode'] == "joint_learn" and self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
+            self.pretrain_discriminator()
             collator = CLDataCollator(self.opt,-1, self.generator[2],self.gender_discriminator,self.model)
             train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None)
+       
         for epoch in range(1, self.opt['num_epoch'] + 1):
             train_loss = 0
             epoch_start_time = time.time()
@@ -1515,42 +1581,43 @@ class CDSRTrainer(Trainer):
             self.dis_loss = 0
             self.group_CL_loss = 0
             self.I2C_loss = 0
-            cluster_result_X = None
-            cluster_result_Y = None
-            cluster_result_cross = None
-            ### adversarial  learning : discriminator pretrain ###
-            # if epoch ==15:
-            #     self.pretrain_discriminator(train_dataloader)
-                # self.gender_discriminator_pretrained = True
+            cluster_result_male_mixed = None
+            cluster_result_female_mixed = None
+            cluster_result_mixed = None
+            cluster_result = None
             
-            # if self.opt['ssl'] == "proto_CL" and self.opt['training_mode'] == "joint_learn":
-                # if epoch+1>=self.opt['warmup_epoch']:
-                #     # x_domain
-                #     # features_X = compute_features(self.opt, train_dataloader, self.MoCo_X, domain = 'X')
-                #     # features_X[torch.norm(features_X,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
-                #     # features_X = features_X.numpy()
-                #     # cluster_result_X = run_kmeans(features_X, self.opt) 
-                #     # # y_domain
-                #     # features_Y = compute_features(self.opt, train_dataloader, self.MoCo_Y, domain = 'Y')
-                #     # features_Y[torch.norm(features_Y,dim=1)>1.5] /= 2 
-                #     # features_Y = features_Y.numpy()
-                #     # cluster_result_Y = run_kmeans(features_Y, self.opt)
-                #     # mixed domain
-                #     if self.opt['mixed_included']:
-                #         features_cross = compute_features(self.opt, train_dataloader, self.model, domain = 'mixed')
-                #         features_cross[torch.norm(features_cross,dim=1)>1.5] /= 2 
-                #         features_cross = features_cross.numpy()
-                #         cluster_result_cross = run_kmeans(features_cross, self.opt)
-            
+            if self.opt['ssl'] in ["interest_cluster","both"]:
+                if epoch >= self.opt['warmup_epoch']:
+                    if self.opt['cluster_mode']=="separate":
+                        # compute cluster results
+                        male_mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = "male")
+                        male_mixed_feature[torch.norm(male_mixed_feature,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
+                        male_mixed_feature = male_mixed_feature.numpy()
+                        cluster_result_male_mixed = run_kmeans(male_mixed_feature, self.opt, gender = "male") 
+                        female_mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = "female")
+                        female_mixed_feature[torch.norm(female_mixed_feature,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
+                        female_mixed_feature = female_mixed_feature.numpy()
+                        cluster_result_female_mixed = run_kmeans(female_mixed_feature, self.opt, gender = "female")
+                    else:
+                        mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = None)
+                        mixed_feature[torch.norm(mixed_feature,dim=1)>1.5] /= 2     
+                        mixed_feature = mixed_feature.numpy()
+                        cluster_result_mixed = run_kmeans(mixed_feature, self.opt, gender = None) 
+                    cluster_result = (cluster_result_mixed, cluster_result_male_mixed, cluster_result_female_mixed)
             ### item-generation & user augmentation ###
-            if self.opt['data_augmentation']=="item_augmentation":
-                collator = CLDataCollator(self.opt, eval=-1, mixed_generator = self.generator[2]) if self.opt['ssl'] in ['group_CL','both'] else None
+            if self.opt['data_augmentation']=="item_augmentation":# 若是item augmentation，則每個epoch都要重新生成DataLoader
+                if self.opt['ssl'] in ['group_CL','both']:
+                    if self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
+                        collator = CLDataCollator(self.opt, eval=-1, mixed_generator = self.generator[2], model = self.model, attribute_predictor=self.gender_discriminator)
+                    else:
+                        # subtitute_mode = "DGIR" or "AGIR"
+                        collator = CLDataCollator(self.opt, eval=-1, mixed_generator = self.generator[2])
+                else:
+                    collator = None
                 train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1,collate_fn=collator, generator = self.generator)
-            
             for i,batch in enumerate(train_dataloader):
-                # print("batch:",i)
                 global_step += 1
-                loss, adv_loss, dis_loss = self.train_batch(epoch, batch, i, cluster_result = (cluster_result_X, cluster_result_Y, cluster_result_cross))
+                loss, adv_loss, dis_loss = self.train_batch(epoch, batch, i, cluster_result = cluster_result)
                 self.dis_loss += dis_loss if dis_loss else 0
                 self.adv_loss += adv_loss if adv_loss else 0
                 train_loss+=loss
@@ -1672,7 +1739,7 @@ class CDSRTrainer(Trainer):
                 print('.', end='')
         if valid_entity == 0:
             valid_entity = 1
-        return MRR/valid_entity, NDCG_5 / valid_entity, NDCG_10 / valid_entity, HR_1 / valid_entity, HR_5 / valid_entity, HR_10 / valid_entity
+        return MRR/valid_entity, NDCG_5 / valid_entity, NDCG_10 / valid_entity, HR_1 / valid_entity, HR_5 / (valid_entity*2/3), HR_10 / (valid_entity*2/3)
 
     def get_evaluation_result_for_test(self, evaluation_batch, mode = "valid"):
         X_pred = []

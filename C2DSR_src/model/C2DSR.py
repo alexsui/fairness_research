@@ -475,11 +475,11 @@ class ClusterRepresentation(nn.Module):
         self.feature_dim = feature_dim
         self.topk = topk
         self.cluster_prototypes = nn.Parameter(torch.randn(num_clusters, feature_dim))
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(feature_dim*topk, feature_dim),
-            nn.ReLU(),
-            nn.Linear(feature_dim, feature_dim),
-        )
+        # self.feature_extractor = nn.Sequential(
+        #     nn.Linear(feature_dim*topk, feature_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(feature_dim, feature_dim),
+        # )
         
     def forward(self, features):
         # features = features[gender==self.gender]
@@ -487,9 +487,9 @@ class ClusterRepresentation(nn.Module):
         # mapping = torch.empty(indices.max() + 1)
         # if self.opt['cuda']:
         #     mapping = mapping.cuda()
-        # # Populate the lookup tensor with mapped values
+        # Populate the lookup tensor with mapped values
         # for i, v in enumerate(indices):
-        #     mapping[v] = i
+        # mapping[v] = i
         sim = features@self.cluster_prototypes.T #[X, num_clusters]
         sim /= sim.max(-1,keepdim = True)[0]
         weight = torch.softmax(sim, dim=-1)
@@ -497,5 +497,5 @@ class ClusterRepresentation(nn.Module):
         new_sim = features@new_cluster.T
         top_k_values, top_k_indice  = torch.topk(new_sim, self.topk, dim=-1)#[X, topk]
         multi_interest = new_cluster[top_k_indice.squeeze()]#[B,topk,feature_dim]
-        multi_interest = self.feature_extractor(multi_interest.reshape(-1, self.feature_dim*self.topk))#[B, feature_dim]
+        # multi_interest = self.feature_extractor(multi_interest.reshape(-1, self.feature_dim*self.topk))#[B, feature_dim]
         return new_cluster, multi_interest

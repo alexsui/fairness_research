@@ -1,10 +1,15 @@
 import argparse
 import time
 import torch
-from train_rec import main
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from train_rec import main
+
 import glob
 import ipdb
+import pandas as pd
+from pathlib import Path
 parser = argparse.ArgumentParser()
 # dataset part
 parser.add_argument(
@@ -124,6 +129,7 @@ parser.add_argument(
 parser.add_argument(
     "--m", type=float, default=0.999, help="momentum update ratio for moco"
 )
+
 parser.add_argument("--mlp", type=bool, default=True, help="use pojector or not")
 # args = parser.parse_args()
 
@@ -166,157 +172,51 @@ parser.add_argument('--num_cluster', type=str, default= '100,100,200' ,help="num
 parser.add_argument('--cluster_mode',type=str,default= "separate" ,help="separate or joint")
 parser.add_argument('--warmup_epoch', type=int, default= 0 ,help="warmup epoch for cluster")
 #group CL
-parser.add_argument('--substitute_ratio',type=float, default= 0.2 ,help="substitute ratio")
-parser.add_argument('--substitute_mode',type=str, default= "IR" ,help="IR, attention_weight")
+parser.add_argument('--substitute_ratio',type=float, default= 0.4 ,help="substitute ratio")
+parser.add_argument('--substitute_mode',type=str, default= "DGIR" ,help="IR, attention_weight")
 # loss weight
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
 args, unknown = parser.parse_known_args()
 
-modes = [
-    # "pretrain_mask_prediction","pretrain_mask_prediction_joint"
-    # "fairness_baseline_Y_triple_pull"
-    # "fairness_baseline_Y_time_eval","fairness_baseline_Y_single_domain_time_eval",
-    # "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize40_eval","fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize50_eval",
-    # "fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize40","fairness_maintaskY_nonoverlapAug_top20_random10_augmentSize50"
-    # "fairness_maintaskY_usergen_biasFree_eval","fairness_maintaskY_usergen_sequentialSimTop5_repeat2_eval","fairness_maintaskY_usergen_sequentialSim_repeat2_eval",
-    # "fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_unbalance_max7_eval"
-    # "fairness_baseline_Y_eval","fairness_baseline_Y_single_domain_eval"
-    # "fairness_maintaskY_usergen_biasFree_fakelabel_eval","fairness_maintaskY_usergen_biasFree_eval"
-    # "fairness_maintaskY_usergen_random_repeat2_eval"
-    # "fairness_maintaskY_groupCL_"
-    # "fairness_maintaskY_generatorAll_generatenumPoisson_random_20epoch_eval"
-    # "fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_eval","fairness_maintaskY_generatorAll_generatenumPoisson_20epoch_unbalance_max7_eval"
-    # "fairness_maintaskY_usergen_biasFree_lambda2_eval","fairness_maintaskY_none_biasFree_eval"
-]
-# evaluation_models = ["fairness_maintaskY_usergen_biasFree_lambda2","fairness_maintaskY_none_biasFree"]
-# evaluation_models = ["fairness_baseline_Y","fairness_baseline_Y_single_domain"]
-modes = ["fairness_baseline_Y","fairness_baseline_Y_single"]
-training_mode = "evaluation"
-domains = ["cross","single"]
-# domain = "cross"
-main_task = "Y"
-ssl = None
-data_augmentation = None
-time_encode = False
-# substitute_ratios = [0.2,0.3,0.4]
-# substitute_modes = ["IR"]
-# topk_clusters = [3, 5, 7]
-# num_clusters = ["100,100,100", "200,200,200","300,300,300"]
-alphas = [0.2,0.4]
+cluster_modes = ["separate","joint"] 
+cluster_numbers = ["50,50,100","100,100,200","150,150,300","200,200,400","250,250,500","300,300,600","350,350,700","400,400,800","450,450,800","500,500,1000"]
 dataset = "Movie_lens_main"
-folder_list = glob.glob(f"./fairness_dataset/{dataset}/*")
-folder_list = [x.split("/")[-1] for x in folder_list]
-data_dir = [x for x in folder_list if "sci-fi" in x]
-
-# data_dir = ['war_crime']
-print(data_dir)
-# warmup_epochs = [1,10] 
-warmup_epoch = 100
-print("Config of Experiment:")
-print(f"Modes: {modes}")
-print("training_mode:", training_mode)
-print(f"Data: {data_dir}")
-num_seeds = 5
-for data_idx in range(len(data_dir)):
-    data_name = data_dir[data_idx]
-    # for i, topk_cluster in enumerate(topk_clusters):
-    #     for num_cluster in num_clusters:
-    for i, domain in enumerate(domains):
-            # for warmup_epoch in warmup_epochs:
-    # for alpha in alphas:
-        for seed in range(1, num_seeds+1):
-            args.training_mode = training_mode
-            args.domain = domain
-            args.main_task = main_task
-            args.time_encode = time_encode
-            # args.substitute_mode = substitute_modes[0]
-            # args.substitute_ratio = substitute_ratios[0]
-            # args.topk_cluster = topk_clusters[0]
-            # args.num_cluster = num_clusters[0]
-            # args.alpha = alpha
-            args.data_augmentation = data_augmentation     
-            args.data_dir = data_name
-            args.dataset = dataset
-            # args.evaluation_model = f"fairness_maintaskY_interest_numCluster{num_cluster.split(',')[0]}_topk{topk_cluster}_warmup{warmup_epoch}"
-            # args.id =  f"fairness_maintaskY_groupCL_female{mode}_ratio{ratio}_double"
-            # args.id = f"fairness_maintaskY_interest_numCluster{num_cluster.split(',')[0]}_topk{topk_cluster}_warmup{warmup_epoch}_eval"
-            args.id = f"{modes[i]}_50"
-            args.evaluation_model = f"{modes[i]}_50"
-            args.seed = seed
-            args.warmup_epoch = warmup_epoch
-            args.num_cluster = "100,100,100"
-            args.ssl = ssl
-            main(args)
-
-# for finetune item generation
-# folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
-# folder_list = [x.split("/")[-1] for x in folder_list]
-# data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-# print(data_dir)
-# # data_dir = ["comedy_drama",'adventure_thriller']
-# # generator_models = ["X_time","mixed_time"]
-# # generate_types = ["X","mixed"]
-# # generate_nums = [3, 5, 7]
-# data_augmentation = 'item_augmentation'
-# load_pretrain_epochs = [20]
-# training_mode = "finetune"
-# main_task = "Y"
-# domain = "cross"
-# time_encode = False
-# print("Config of Experiment:")
-# print(f"load_pretrain_epochs: {load_pretrain_epochs}")
-# print(f"Data: {data_dir}")
-# num_seeds = 5
-# for data_idx in range(len(data_dir)):
-#     data_name = data_dir[data_idx]
-#     for epoch in load_pretrain_epochs:
-#         for seed in range(1, num_seeds+1):
-#             args.load_pretrain_epoch = epoch           
-#             args.training_mode = training_mode
-#             args.data_augmentation = data_augmentation
-#             args.domain = domain
-#             args.main_task = main_task
-#             args.time_encode = time_encode
-#             args.data_dir = data_name
-#             id =f"fairness_maintask{main_task}_generatorAll_generatenumPoisson_sample5_IFTop3_{epoch}epoch"
-#             args.id = id
-#             args.seed = seed
-#             args.num_cluster = "2,3,4"
-#             args.warmup_epoch = 10000
-#             main(args)
-                    
-# # evaluation
-# folder_list = glob.glob("./fairness_dataset/Movie_lens_time/*")
-# folder_list = [x.split("/")[-1] for x in folder_list]
-# data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]
-# print(data_dir)
-# # mode_name = glob.glob("./saved_models/comedy_thriller/fairness_maintaskY_generatorAll*20epoch")
-# # evaluation_models = [ x.split("/")[-1] for x in mode_name]
-# evaluation_models = ["fairness_maintaskY_generatorAll_generatenumPoisson_sample10_IFTop5_20epoch"]
-# print("evaluation_models:", evaluation_models)
-# # generate_types = ["X","Y","mixed"]
-# load_pretrain_epochs = [20]
-# training_mode = "evaluation"
-# time_encode = False
-# main_task = "Y"
-# domain = "cross"
-# print("Config of Experiment:")
-# print(f"load_pretrain_epochs: {load_pretrain_epochs}")
-# print(f"Data: {data_dir}")
-# num_seeds = 5
-# for data_idx in range(len(data_dir)):
-#     data_name = data_dir[data_idx]
-#     for i, model in enumerate(evaluation_models):
-#         for seed in range(1, num_seeds+1):
-#             args.evaluation_model = model
-#             args.training_mode = training_mode
-#             args.domain = domain
-#             args.main_task = main_task
-#             args.data_dir = data_name
-#             args.time_encode = time_encode
-#             id =f"{model}_eval"
-#             args.id = id
-#             args.seed = seed
-#             args.num_cluster = "2,3,4"
-#             args.warmup_epoch = 10000
-#             main(args)
+data_dirs = glob.glob(f"./fairness_dataset/{dataset}/*")
+data_dirs = [x.split("/")[-1] for x in data_dirs] 
+for data_dir in data_dirs:
+    columns_name = ["is_baseline","cluster_mode","seed","cluster_number",
+                    "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
+                    "test_Y_MRR_male", "test_Y_NDCG_5_male", "test_Y_NDCG_10_male", "test_Y_HR_5_male", "test_Y_HR_10_male",
+                    "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
+                    ]
+    res_df = pd.DataFrame(columns=columns_name)
+    for i in range(3,8):
+        for cluster_mode in cluster_modes:
+            for cluster_number in cluster_numbers:
+                args.cluster_mode = cluster_mode
+                args.num_cluster = cluster_number
+                args.data_dir = data_dir
+                args.dataset = dataset
+                args.seed = i
+                args.num_epoch = 200
+                args.ssl = "interest_cluster"
+                args.training_mode = "joint_learn"
+                args.id = f"RQ2_cluster_mode{cluster_mode}_cluster_number{cluster_number.split(',')[-1]}"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                is_baseline = False
+                df = pd.DataFrame([[is_baseline, cluster_mode,i,cluster_number]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+        args.data_dir = data_dir
+        args.dataset = dataset
+        args.seed = i
+        args.num_epoch = 200
+        args.ssl = None
+        args.training_mode = "finetune"
+        args.id = f"RQ2_cluster_mode_baseline"
+        args.num_cluster = "1,1,1"
+        best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+        is_baseline = True
+        df = pd.DataFrame([[is_baseline, None,i,None]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+        res_df = pd.concat([res_df,df],axis=0)
+    Path(f"./RQ2/cluster_mode_res_new/").mkdir(parents=True, exist_ok=True)
+    res_df.to_csv(f"./RQ2/cluster_mode_res_new/{data_dir}.csv")

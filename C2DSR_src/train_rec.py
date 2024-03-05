@@ -92,7 +92,7 @@ def main(args):
         mixed_generator.load_state_dict(state_dict)
         print("\033[01;32m Generator loaded! \033[0m")
     # use collator or not
-    if opt['ssl'] in ["group_CL","both"] and opt["substitute_mode"]in ["IR","random"]:
+    if opt['ssl'] in ["group_CL","both"] and opt["substitute_mode"]in ["DGIR","AGIR","random"]:
         collator = CLDataCollator(opt, eval=-1, mixed_generator=mixed_generator)
     else:
         collator = None
@@ -162,13 +162,13 @@ def main(args):
             print("\033[01;34m Start joint learning... \033[0m\n")
         if  opt['training_mode']=="evaluation" and opt['evaluation_model'] is not None:
             print("\033[01;34m Start evaluation... \033[0m\n")
-            best_Y_test_male,best_Y_test_female = trainer.evaluate(test_batch, file_logger)
-            return best_Y_test_male,best_Y_test_female
+            best_Y_test, best_Y_test_male,best_Y_test_female = trainer.evaluate(test_batch, file_logger)
+            return best_Y_test, best_Y_test_male,best_Y_test_female
         if opt['data_augmentation']=="item_augmentation" or opt['ssl']in ["group_CL","both"]:
             trainer.generator = [source_generator, target_generator, mixed_generator]
         trainer.train(opt['num_epoch'], train_batch, valid_batch, test_batch, file_logger)
         opt['evaluation_model'] = opt['id']
-        opt['id'] = opt['id'] + "_eval"
+        opt['id'] = str(opt['id']) + "_eval"
         best_Y_test,best_Y_test_male,best_Y_test_female = trainer.evaluate(test_batch, file_logger)
         return best_Y_test,best_Y_test_male,best_Y_test_female
     else:
@@ -181,7 +181,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # dataset part
     parser.add_argument('--data_dir', type=str, default='action_animation', help='Movie-Book, Entertainment-Education')
-
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="Movie_lens_time",
+        help="Movie-Book, Entertainment-Education",
+    )
     # model part
     parser.add_argument('--model', type=str, default="C2DSR", help='model name')
     parser.add_argument('--hidden_units', type=int, default=128, help='lantent dim.')
@@ -270,6 +275,7 @@ if __name__ == '__main__':
     #interest clustering
     parser.add_argument('--topk_cluster',type=str,default= 5 ,help="number of multi-view cluster")
     parser.add_argument('--num_cluster', type=str, default= '2000,3000,4000' ,help="number of clusters for kmeans")
+    parser.add_argument('--cluster_mode',type=str,default= "separate" ,help="separate or joint")
     parser.add_argument('--warmup_epoch', type=int, default= 15 ,help="warmup epoch for cluster")
     # group CL
     parser.add_argument('--substitute_ratio',type=float,default= 0.2 ,help="substitute ratio")

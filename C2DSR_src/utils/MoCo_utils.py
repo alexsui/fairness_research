@@ -3,33 +3,35 @@ from tqdm import tqdm
 import ipdb
 from .torch_utils import *
 
-def compute_features(opt, eval_loader, model, domain="X"):
-    print(f"Computing features for domain {domain}")
+def compute_features(opt, eval_loader, model, gender):
+    print(f"Computing features for {gender}")
     model.eval()
-    features = torch.zeros(eval_loader.num_examples, opt["hidden_units"]).cuda()
-    for i, batch in enumerate(eval_loader):
-        index = batch[0]
-        if domain == "X":
-            augmented_data = batch[27]
-            # augmented_data  = batch[2] # no augmentation - x domain sequence
-            ts = batch[8]
-        elif domain == "Y":
-            augmented_data = batch[28]
-            # augmented_data  = batch[3] # no augmentation- x domain sequence
-            ts = batch[9]
-        elif domain == "mixed":
-            augmented_data = batch[1] # no augmentation- cross domain sequence
-            ts = batch[7]
-        # ipdb.set_trace()
+    if gender == "male":
+        features = torch.zeros(len(eval_loader.male_data), opt["hidden_units"]).cuda()
+        item_seq = eval_loader.male_data
+    elif gender == "female":
+        features = torch.zeros(len(eval_loader.female_data), opt["hidden_units"]).cuda()
+        item_seq = eval_loader.female_data
+    else:
+        features = torch.zeros(len(eval_loader.all_data), opt["hidden_units"]).cuda()
+        item_seq = eval_loader.all_data
+    batch_size = 1024
+    index = list(range(len(item_seq)))
+    mixed_seq = [seq[1] for seq in item_seq]
+    ts = [seq[7] for seq in item_seq]
+    batch_index= [index[i*batch_size:(i+1)*batch_size] for i in range(len(index)//batch_size+1)]
+    batch_mixed_seq= [mixed_seq[i*batch_size:(i+1)*batch_size] for i in range(len(mixed_seq)//batch_size+1)]
+    batch_ts= [ts[i*batch_size:(i+1)*batch_size] for i in range(len(ts)//batch_size+1)]
+    for i, (index, mixed_seq, ts) in enumerate(zip(batch_index, batch_mixed_seq, batch_ts)):
+        index = torch.tensor(index)
+        mixed_seq = torch.tensor(mixed_seq) # no augmentation- cross domain sequence
+        ts = torch.tensor(ts)
+        if opt['cuda']:
+            mixed_seq = mixed_seq.cuda()
+            ts = ts.cuda()
+            index = index.cuda()
         with torch.no_grad():
-            augmented_data = augmented_data.cuda()
-            
-            if domain == "mixed":
-                feat = get_embedding_for_ssl(opt, augmented_data, model.encoder, model.item_emb, projector=None, encoder_causality_mask = False, ts=ts)
-            else:
-                if augmented_data.ndim == 2:
-                    augmented_data = augmented_data.unsqueeze(1)
-                feat = model(augmented_data[:, 0, :], is_eval=True,ts=ts)
+            feat = get_embedding_for_ssl(opt, mixed_seq, model.encoder, model.item_emb, projector=None, encoder_causality_mask = False, ts=ts)
             features[index] = feat
     return features.cpu()
 def compute_embedding_for_target_user(opt, dataloader, model, name):
