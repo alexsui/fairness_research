@@ -277,6 +277,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_cluster', type=str, default= '2000,3000,4000' ,help="number of clusters for kmeans")
     parser.add_argument('--cluster_mode',type=str,default= "separate" ,help="separate or joint")
     parser.add_argument('--warmup_epoch', type=int, default= 15 ,help="warmup epoch for cluster")
+    parser.add_argument('--cluster_ratio',type=float, default= 0.5 ,help="cluster ratio")
+
     # group CL
     parser.add_argument('--substitute_ratio',type=float,default= 0.2 ,help="substitute ratio")
     parser.add_argument('--substitute_mode',type=str,default= "IR" ,help="IR, attention_weight")

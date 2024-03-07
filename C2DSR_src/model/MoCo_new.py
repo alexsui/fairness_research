@@ -94,7 +94,6 @@ class MoCo_Interest(nn.Module):
                 neg_prototypes = prototypes[neg_proto_id] #[batch_size, num_neg, dim]
                 l_neg = torch.einsum('nc,nkc->nk', [target_feature, neg_prototypes])
                 logits_proto = torch.cat([l_pos, l_neg], dim=1)
-                ipdb.set_trace()
                 temp_proto = density[torch.cat([top_k_indice,neg_proto_id],dim=1)]  
                 logits_proto /= temp_proto
                 proto_logits.append(logits_proto)
