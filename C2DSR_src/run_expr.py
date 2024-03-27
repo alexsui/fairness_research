@@ -170,6 +170,8 @@ parser.add_argument('--substitute_ratio',type=float, default= 0.2 ,help="substit
 parser.add_argument('--substitute_mode',type=str, default= "IR" ,help="IR, attention_weight")
 # loss weight
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
+#C2DSR
+parser.add_argument('--C2DSR', type=str, default= False ,help="if train C2DSR")
 args, unknown = parser.parse_known_args()
 
 modes = [
@@ -190,23 +192,24 @@ modes = [
 ]
 # evaluation_models = ["fairness_maintaskY_usergen_biasFree_lambda2","fairness_maintaskY_none_biasFree"]
 # evaluation_models = ["fairness_baseline_Y","fairness_baseline_Y_single_domain"]
-modes = ["fairness_baseline_Y","fairness_baseline_Y_single"]
-training_mode = "evaluation"
+modes = ["fairness_baseline_Y_50","fairness_baseline_Y_single_50"]
+training_mode = "finetune"
 domains = ["cross","single"]
 # domain = "cross"
 main_task = "Y"
 ssl = None
 data_augmentation = None
 time_encode = False
+C2DSR = False
 # substitute_ratios = [0.2,0.3,0.4]
 # substitute_modes = ["IR"]
 # topk_clusters = [3, 5, 7]
 # num_clusters = ["100,100,100", "200,200,200","300,300,300"]
-alphas = [0.2,0.4]
-dataset = "Movie_lens_main"
+# alphas = [0.2,0.4]
+dataset = "RQ4_dataset/user_ratio/manual"
 folder_list = glob.glob(f"./fairness_dataset/{dataset}/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
-data_dir = [x for x in folder_list if "sci-fi" in x]
+data_dir = [x for x in folder_list]
 
 # data_dir = ['war_crime']
 print(data_dir)
@@ -229,6 +232,7 @@ for data_idx in range(len(data_dir)):
             args.domain = domain
             args.main_task = main_task
             args.time_encode = time_encode
+            args.C2DSR = C2DSR
             # args.substitute_mode = substitute_modes[0]
             # args.substitute_ratio = substitute_ratios[0]
             # args.topk_cluster = topk_clusters[0]
@@ -240,8 +244,8 @@ for data_idx in range(len(data_dir)):
             # args.evaluation_model = f"fairness_maintaskY_interest_numCluster{num_cluster.split(',')[0]}_topk{topk_cluster}_warmup{warmup_epoch}"
             # args.id =  f"fairness_maintaskY_groupCL_female{mode}_ratio{ratio}_double"
             # args.id = f"fairness_maintaskY_interest_numCluster{num_cluster.split(',')[0]}_topk{topk_cluster}_warmup{warmup_epoch}_eval"
-            args.id = f"{modes[i]}_50"
-            args.evaluation_model = f"{modes[i]}_50"
+            args.id = f"{modes[i]}"
+            # args.evaluation_model = f"{modes[i]}_50"
             args.seed = seed
             args.warmup_epoch = warmup_epoch
             args.num_cluster = "100,100,100"

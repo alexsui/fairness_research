@@ -28,6 +28,7 @@ class DataLoader(DataLoader):
         self.filename  = filename
         self.collate_fn = collate_fn
         self.model = model 
+        self.balance = balanced
         if generator is not None:
             self.source_generator = generator[0]
             self.target_generator = generator[1]
@@ -50,15 +51,21 @@ class DataLoader(DataLoader):
 
         if evaluation < 0:
             self.train_data = self.read_train_data(source_train_data)
-            if (self.opt['data_augmentation']=="user_generation" and self.model is not None) or balanced:
+            if (self.opt['data_augmentation']=="user_generation" and self.model is not None) or self.balance:
                 self.overlap_user_generation()
-            if (self.opt['data_augmentation']=="item_augmentation" and generator is not None) :
+            if (self.opt['data_augmentation']=="item_augmentation" and generator is not None) and not self.balance:
                 self.item_generate_female()
             data = self.preprocess()
             self.num_examples = len(data)
             # ipdb.set_trace()
             self.female_data = [d for d in data if d[-1][0]==0]
             self.male_data = [d for d in data if d[-1][0]==1]
+            if self.opt['RQ4']:
+                female_num = len(self.female_data)
+                male_num = int(female_num*self.opt['RQ4_user_ratio'])
+                data = self.female_data + self.male_data[:male_num]
+                print("RQ4: male number:",male_num)
+                print("RQ4: female number:",female_num)
             self.all_data = data
             print("number of train_data:",len(data))
         elif evaluation == 2:
@@ -137,8 +144,11 @@ class DataLoader(DataLoader):
                 new_ts = sorted(new_ts)
                 new_data = [0,[[i,t] for i, t in zip(new_item_seq.tolist(), new_ts)]]
                 augmented_seq.append(new_data)
-            # except:
-            #     ipdb.set_trace()
+                if len(augmented_seq)+len(female_seq)==len([s for s in self.train_data if s[0]==1]):
+                    break
+            if len(augmented_seq)+len(female_seq)==len([s for s in self.train_data if s[0]==1]):
+                break
+
         self.train_data = self.train_data + augmented_seq
         print("Number of female augmented sequence:",len(augmented_seq))
         print("Number of female sequence:",len([s for s in self.train_data if s[0]==0]))
@@ -192,7 +202,6 @@ class DataLoader(DataLoader):
                 sampled_indices = sampled_indices + self.opt['source_item_num']
             torch_seq[mask] = sampled_indices
             new_seq = torch_seq.tolist() 
-       
         new_seq = [(g,[[x,ts] for x,ts in zip(sublist,timestamp) if x != self.opt['source_item_num'] + self.opt['target_item_num']]) for g, sublist, timestamp in zip(gender, new_seq, torch_ts.tolist())]
         return new_seq
     def item_generate_female(self):

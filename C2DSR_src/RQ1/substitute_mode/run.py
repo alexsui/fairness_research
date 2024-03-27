@@ -3,9 +3,10 @@ import time
 import torch
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(os.path.dirname(current_dir))
+sys.path.insert(0, parent_dir)
 from train_rec import main
-
 import glob
 import ipdb
 import pandas as pd
@@ -177,8 +178,8 @@ parser.add_argument('--substitute_mode',type=str, default= "IR" ,help="IR, atten
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
 args, unknown = parser.parse_known_args()
 
-substitute_modes = ["AGIR","DGIR", "attention_weight",'hybrid','random'] 
-dataset = "Movie_lens_main"
+substitute_modes = ["attention_weight", "AGIR", "DGIR", 'hybrid', 'random'] 
+dataset = "tmp_for_main"
 data_dirs = glob.glob(f"./fairness_dataset/{dataset}/*")
 data_dirs = [x.split("/")[-1] for x in data_dirs] 
 for data_dir in data_dirs:
@@ -188,31 +189,30 @@ for data_dir in data_dirs:
                     "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
                     ]
     res_df = pd.DataFrame(columns=columns_name)
-    for sub_mode in substitute_modes:
-        for i in range(5):
+    for i in range(5,10):
+        for sub_mode in substitute_modes:
             args.substitute_mode = sub_mode
             args.data_dir = data_dir
             args.dataset = dataset
             args.seed = i
+            args.num_epoch = 200
             args.ssl = "group_CL"
             args.training_mode = "joint_learn"
             args.num_cluster = "100,100,4"
             args.id = f"RQ1_sub_mode{sub_mode}"
             best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
-            is_baseline = False
-            df = pd.DataFrame([[is_baseline,sub_mode,i]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+            df = pd.DataFrame([[sub_mode,i]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
             res_df = pd.concat([res_df,df],axis=0)
-    args.data_dir = data_dir
-    args.dataset = dataset
-    args.seed = i
-    args.ssl = None
-    args.num_epoch = 200
-    args.training_mode = "finetune"
-    args.num_cluster = "100,100,4"
-    args.id = f"RQ1_baseline"
-    best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
-    is_baseline = True
-    df = pd.DataFrame([[is_baseline,sub_mode,i]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-    res_df = pd.concat([res_df,df],axis=0)
-    Path(f"./RQ1/substitution_mode_res/").mkdir(parents=True, exist_ok=True)
-    res_df.to_csv(f"./RQ1/substitution_mode_res/{data_dir}.csv")
+        args.data_dir = data_dir
+        args.dataset = dataset
+        args.seed = i
+        args.ssl = None
+        args.num_epoch = 200
+        args.training_mode = "finetune"
+        args.num_cluster = "100,100,4"
+        args.id = f"RQ1_baseline"
+        best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+        df = pd.DataFrame([["baseline",i]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+        res_df = pd.concat([res_df,df],axis=0)
+    Path(f"./RQ1/substitute_mode/substitution_mode_res_seed5_9_realGender/").mkdir(parents=True, exist_ok=True)
+    res_df.to_csv(f"./RQ1/substitute_mode/substitution_mode_res_seed5_9_realGender/{data_dir}.csv")

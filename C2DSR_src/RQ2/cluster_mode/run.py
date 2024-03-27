@@ -183,10 +183,11 @@ args, unknown = parser.parse_known_args()
 
 cluster_modes = ["separate","joint"] 
 cluster_numbers = ["50,50,100","100,100,200","150,150,300","200,200,400","250,250,500","300,300,600","350,350,700","400,400,800","450,450,900","500,500,1000"]
-dataset = "Movie_lens_main"
+# dataset = "Movie_lens_main"
+dataset = "tmp_for_main"
 data_dirs = glob.glob(f"./fairness_dataset/{dataset}/*")
 data_dirs = [x.split("/")[-1] for x in data_dirs] 
-data_dirs = ["sci-fi_thriller","comedy_drama"]
+# data_dirs = ["sci-fi_thriller","comedy_drama"]
 for data_dir in data_dirs:
     columns_name = ["is_baseline","seed","cluster_number","cluster_mode",
                     "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
@@ -203,7 +204,6 @@ for data_dir in data_dirs:
                 args.dataset = dataset
                 args.seed = i
                 args.num_epoch = 200
-                args.cluster_mode = 'separate'
                 args.ssl = "interest_cluster"
                 args.training_mode = "joint_learn"
                 args.id = f"RQ2_cluster_mode{cluster_mode}_cluster_number{cluster_number}"
@@ -224,6 +224,6 @@ for data_dir in data_dirs:
         is_baseline = True
         df = pd.DataFrame([[is_baseline,i,None,None]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
         res_df = pd.concat([res_df,df],axis=0)
-    Path(f"./RQ2/cluster_mode/cluster_mode_res_additional").mkdir(parents=True, exist_ok=True)
-    res_df.to_csv(f"./RQ2/cluster_mode/cluster_mode_res_additional/{data_dir}.csv")
+    Path(f"./RQ2/cluster_mode/cluster_mode_res").mkdir(parents=True, exist_ok=True)
+    res_df.to_csv(f"./RQ2/cluster_mode/cluster_mode_res/{data_dir}.csv")
     

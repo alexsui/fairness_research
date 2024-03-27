@@ -182,11 +182,11 @@ args, unknown = parser.parse_known_args()
 
 cluster_numbers = ["700,700,700","500,500,500","500,500,500","400,400,400"]
 data_dirs = ["sci-fi_thriller","action_comedy","comedy_drama","sci-fi_comedy"]
-cluster_ratios = 
+cluster_ratios = [0.7,0.4,0.3,0.7]
 topk_clusters = [1,3,5,7,9,11,13,15]
 dataset = "Movie_lens_main"
 for data_dir, cluster_number,cluster_ratio in zip(data_dirs,cluster_numbers,cluster_ratios):
-    columns_name = ["is_baseline","seed","cluster_number","cluster_ratio",
+    columns_name = ["seed","topk_cluster",
                     "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
                     "test_Y_MRR_male", "test_Y_NDCG_5_male", "test_Y_NDCG_10_male", "test_Y_HR_5_male", "test_Y_HR_10_male",
                     "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
@@ -204,22 +204,9 @@ for data_dir, cluster_number,cluster_ratio in zip(data_dirs,cluster_numbers,clus
             args.cluster_mode = 'separate'
             args.ssl = "interest_cluster"
             args.training_mode = "joint_learn"
-            args.id = f"RQ2_cluster_ratio{cluster_ratio}"
+            args.id = f"RQ2_topk_cluster{topk_cluster}"
             best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
-            is_baseline = False
-            df = pd.DataFrame([[is_baseline,i,cluster_number,cluster_ratio]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+            df = pd.DataFrame([[i,topk_cluster]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
             res_df = pd.concat([res_df,df],axis=0)
-        args.data_dir = data_dir
-        args.dataset = dataset
-        args.seed = i
-        args.num_epoch = 200
-        args.ssl = None
-        args.training_mode = "finetune"
-        args.id = f"RQ2_cluster_ratio_baseline"
-        args.num_cluster = "1,1,1"
-        best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
-        is_baseline = True
-        df = pd.DataFrame([[is_baseline,i,None,None]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-        res_df = pd.concat([res_df,df],axis=0)
     Path(f"./RQ2/multi_cluster/multi_cluster_res/").mkdir(parents=True, exist_ok=True)
     res_df.to_csv(f"./RQ2/multi_cluster/multi_cluster_res/{data_dir}.csv")

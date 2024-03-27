@@ -180,10 +180,12 @@ parser.add_argument('--substitute_mode',type=str, default= "DGIR" ,help="IR, att
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
 args, unknown = parser.parse_known_args()
 
-cluster_numbers = ["700,700,700","500,500,500","500,500,500","400,400,400"]
-data_dirs = ["sci-fi_thriller","action_comedy","comedy_drama","sci-fi_comedy"]
+# cluster_numbers = ["700,700,700","500,500,500","500,500,500","400,400,400"]
+# data_dirs = ["sci-fi_thriller","action_comedy","comedy_drama","sci-fi_comedy"]
+cluster_numbers = ["700,700,700"]
+data_dirs = ['drama_sci-fi']
 cluster_ratios = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-dataset = "Movie_lens_main"
+dataset = "tmp_for_main"
 for data_dir, cluster_number in zip(data_dirs,cluster_numbers):
     columns_name = ["is_baseline","seed","cluster_number","cluster_ratio",
                     "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",

@@ -101,13 +101,18 @@ class CLDataCollator:
         augmented_d = []
         for _ in range(2):
             if self.attribute_predictor is not None and self.model is not None and self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
-                gender_mask = torch.tensor(gender)[:,0]==1
+                # gender_mask = torch.tensor(gender)[:,0]==1
                 item_seqs = torch.tensor(item_seqs).clone().detach()
                 item_seqs = item_seqs.cuda() if self.opt['cuda'] else item_seqs
-                seqs_fea = get_item_embedding_for_sequence(self.opt,item_seqs,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
+                initial_params_A = [param.clone() for param in self.attribute_predictor.parameters()]
                 self.attribute_predictor.eval()
+                self.model.eval()
                 with torch.no_grad():
-                    _, weight = self.attribute_predictor(seqs_fea)
+                    seqs_fea = get_item_embedding_for_sequence(self.opt,item_seqs,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
+                    pred, weight = self.attribute_predictor(seqs_fea)
+                    pred, weight = pred.detach(), weight.detach()
+                    # gender_mask = torch.round(pred).squeeze()==1
+                    gender_mask = torch.tensor(gender)[:,0]==1
                     weight = weight.squeeze()
                     item_seqs= item_seqs.squeeze()
                     mask = (item_seqs!=(self.opt['source_item_num'] + self.opt['target_item_num']))
@@ -172,8 +177,9 @@ class CLDataCollator:
                             values = (values-min_)/(max_-min_+1e-9)
                         #sample item from the highest 50% attention weight items
                         probabilities = torch.nn.functional.softmax(values, dim=1)
-                        seleted_idx = [torch.tensor(sorted_idx[i]).to(weight.device)[torch.multinomial(p, max(int(item_seq_len[i] * ratio),1), replacement=False)].tolist() for i,p in enumerate(probabilities)]
-                        selected_item = [seq[idx].cpu().detach().numpy() for seq,idx in zip(item_seqs,seleted_idx)]
+                        # num_substitute = [int(item_seq_len[i] * ratio).item() if int(item_seq_len[i] * ratio) <= item_seq_len[i]//2 else item_seq_len[i]//2  for i in range(probabilities.shape[0])]
+                        selected_idx = [torch.tensor(sorted_idx[i]).to(weight.device)[torch.multinomial(p, max(round(((item_seq_len[i]//2)*ratio).item()),1), replacement=False)].tolist() for i,p in enumerate(probabilities)]
+                        selected_item = [seq[idx].cpu().detach().numpy() for seq,idx in zip(item_seqs,selected_idx)]
                         item_seqs = item_seqs.clone().cpu().detach().numpy()
                         for i,seq in enumerate(item_seqs):
                             try:
@@ -185,8 +191,14 @@ class CLDataCollator:
                             new_seq = seq[-self.opt['maxlen']:]
                             new_seqs.append(new_seq)
                             new_positions.append(position)
-                    get_new_seq(male_sorted_idx,male_item_seqs,1)
-                    get_new_seq(female_sorted_idx,female_item_seqs,0)
+                    if male_sorted_idx:
+                        get_new_seq(male_sorted_idx,male_item_seqs,1)
+                    if female_sorted_idx:
+                        get_new_seq(female_sorted_idx,female_item_seqs,0)
+                for param, initial_param in zip(self.attribute_predictor.parameters(), initial_params_A):
+                    if not torch.equal(param, initial_param):
+                        print("Warning: Parameters of model A are changing!")
+                        break
             else:
                 new_seqs = []
                 new_positions = []
@@ -205,7 +217,7 @@ class CLDataCollator:
                         values = np.array(list(pair.values()))
                         # sample item from the highest 50% male IR items or lowest 50% female IR items
                         probabilities = np.exp(values - np.max(values)) / np.sum(np.exp(values - np.max(values)))
-                        size = max(int(item_seq_len * ratio), 1)
+                        size = max(round(item_seq_len//2 * ratio), 1)
                         if size > len(values):
                             size = len(values)
                         try:
@@ -250,14 +262,12 @@ class CLDataCollator:
                 # item_IR = {item:male_IR[str(item)] if str(item) in male_IR.keys() else 0 for item in item_seq}
                 item_IR = {item:female_IR[str(item)] if str(item) in female_IR.keys() else 0 for item in item_seq}
                 item_seq_len = len(item_seq[item_seq!=(self.opt['source_item_num'] + self.opt['target_item_num'])])
-                
                 ###find male item to substitute with attention weight###
                 if self.attribute_predictor is not None and self.model is not None and self.opt['substitute_mode'] == "attention_weight":
                     item_seq = torch.tensor(item_seq).unsqueeze(0)
                     item_seq = item_seq.cuda() if self.opt['cuda'] else item_seq
                     seqs_fea = get_item_embedding_for_sequence(self.opt,item_seq,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
                     _, weight = self.attribute_predictor(seqs_fea)
-                    ipdb.set_trace()
                     weight = weight.squeeze()
                     item_seq= item_seq.squeeze()
                     mask = item_seq!=(self.opt['source_item_num'] + self.opt['target_item_num'])
@@ -266,9 +276,9 @@ class CLDataCollator:
                     values = weight[idx:][sorted_idx] 
                     #sample item from the highest 50% attention weight items
                     probabilities = torch.nn.functional.softmax(values, dim=0)
-                    sampled_pos = torch.multinomial(probabilities, max(int(item_seq_len * ratio),1), replacement=False).squeeze()
-                    seleted_idx = sorted_idx[sampled_pos]
-                    selected_item = item_seq[idx:][seleted_idx].cpu().detach().numpy()
+                    sampled_pos = torch.multinomial(probabilities, max(round(((item_seq_len[i]//2)*ratio).item()), 1), replacement=False).squeeze()
+                    selected_idx = sorted_idx[sampled_pos]
+                    selected_item = item_seq[idx:][selected_idx].cpu().detach().numpy()
                     item_seq = item_seq.cpu().detach().numpy()
                     try:
                         substitute_idxs = np.where(item_seq ==selected_item[:, None])[1] #more than one item

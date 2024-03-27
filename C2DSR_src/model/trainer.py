@@ -670,7 +670,9 @@ class CDSRTrainer(Trainer):
         self.NNCL_loss = 0
         self.group_CL_loss = 0
         self.I2C_loss = 0
-        self.BCE_criterion = nn.BCELoss(reduction='none')
+        self.y_mi_loss = 0
+        self.BCE_criterion = nn.BCELoss()
+        self.BCE_logit = nn.BCEWithLogitsLoss()
         self.CS_criterion = nn.CrossEntropyLoss(reduction='none')
         self.CL_criterion = nn.CrossEntropyLoss()
         self.proto_criterion = nn.CrossEntropyLoss()
@@ -703,7 +705,7 @@ class CDSRTrainer(Trainer):
             self.proto_criterion = self.proto_criterion.cuda()
             self.NNCL = self.NNCL.cuda()
             self.gender_discriminator = self.gender_discriminator.cuda()
-           
+            self.BCE_logit = self.BCE_logit.cuda()
             if self.opt['ssl'] in ['interest_cluster','both']:
                 self.MoCo_Interest = self.MoCo_Interest.cuda()
                 if self.opt['cluster_mode'] =="separate":
@@ -1239,11 +1241,19 @@ class CDSRTrainer(Trainer):
                     # I2C_loss = self.I2C_CL(index,seq, y_seq,ts_d,ts_yd,gender)
                     # I2C_loss = self.I2C_CL_Kmeans(index, seq, y_seq, ts_d, ts_yd, gender, cluster_result)
                     I2C_loss = self.I2C_CL(index, seq, y_seq, ts_d, ts_yd, gender)
-                    # print(f"\033[34mI2C_loss:{I2C_loss}\033[0m")
+                 # print(f"\033[34mI2C_loss:{I2C_loss}\033[0m")
                 else:
                     I2C_loss = torch.Tensor([0]).cuda() if self.opt['cuda'] else torch.Tensor([0])
             if self.opt['ssl'] in ["both","group_CL"]:
-                group_CL_loss = self.group_CL(augmented_d,augmented_xd,augmented_yd)
+                if self.opt['substitute_mode'] in ['attention_weight','hybrid']:
+                    if epoch>=10:
+                        group_CL_loss = self.group_CL(augmented_d,augmented_xd,augmented_yd)
+                    else:
+                        group_CL_loss = torch.Tensor([0]).cuda() if self.opt['cuda'] else torch.Tensor([0])
+                else:
+                    group_CL_loss = self.group_CL(augmented_d,augmented_xd,augmented_yd)
+               
+                # group_CL_loss = self.group_CL(augmented_d,augmented_xd,augmented_yd)
         if self.opt['domain'] =="single":
             seq = None 
             if self.opt['main_task'] == "X":
@@ -1256,7 +1266,44 @@ class CDSRTrainer(Trainer):
         else: 
             seqs_fea, x_seqs_fea, y_seqs_fea = self.model(seq, x_seq, y_seq, position, x_position, y_position)
         
-       
+        if self.opt['C2DSR']:
+            corru_x_fea = self.model.false_forward(corru_x, position)
+            corru_y_fea = self.model.false_forward(corru_y, position)
+
+            x_mask = x_ground_mask.float().sum(-1).unsqueeze(-1).repeat(1,x_ground_mask.size(-1))
+            x_mask = 1 / x_mask
+            x_mask = x_ground_mask * x_mask # for mean
+            x_mask = x_mask.unsqueeze(-1).repeat(1,1,seqs_fea.size(-1))
+            r_x_fea = (x_seqs_fea * x_mask).sum(1)
+
+            y_mask = y_ground_mask.float().sum(-1).unsqueeze(-1).repeat(1, y_ground_mask.size(-1))
+            y_mask = 1 / y_mask
+            y_mask = y_ground_mask * y_mask # for mean
+            y_mask = y_mask.unsqueeze(-1).repeat(1,1,seqs_fea.size(-1))
+            r_y_fea = (y_seqs_fea * y_mask).sum(1)
+
+
+            real_x_fea = (seqs_fea * x_mask).sum(1)
+            real_y_fea = (seqs_fea * y_mask).sum(1)
+            x_false_fea = (corru_x_fea * x_mask).sum(1)
+            y_false_fea = (corru_y_fea * y_mask).sum(1)
+
+
+            real_x_score = self.model.D_X(r_x_fea, real_y_fea) # the cross-domain infomax
+            false_x_score = self.model.D_X(r_x_fea, y_false_fea)
+
+            real_y_score = self.model.D_Y(r_y_fea, real_x_fea)
+            false_y_score = self.model.D_Y(r_y_fea, x_false_fea)
+
+            pos_label = torch.ones_like(real_x_score).cuda()
+            neg_label = torch.zeros_like(false_x_score).cuda()
+            x_mi_real = self.BCE_criterion(real_x_score, pos_label)
+            x_mi_false = self.BCE_criterion(false_x_score, neg_label)
+            x_mi_loss = x_mi_real + x_mi_false
+
+            y_mi_real = self.BCE_logit(real_y_score, pos_label)
+            y_mi_false = self.BCE_logit(false_y_score, neg_label)
+            y_mi_loss = y_mi_real + y_mi_false
         #取倒數10個
         used = 50
         ground = ground[:,-used:]
@@ -1421,14 +1468,22 @@ class CDSRTrainer(Trainer):
                 share_y_result =  self.model.lin_Y(seqs_fea[:,-used:]) # b * seq * X_num
                 share_pad_result = self.model.lin_PAD(seqs_fea[:, -used:])  # b * seq * 1 #最後一維，即padding，score要是零
                 share_trans_y_result = torch.cat((share_y_result, share_pad_result), dim=-1)
-
+                
+                # specific_x_result = self.model.lin_X(x_seqs_fea[:, -used:])
+                # specific_x_pad_result = self.model.lin_PAD(x_seqs_fea[:, -used:])  # b * seq * 1
+                # specific_x_result = torch.cat((specific_x_result, specific_x_pad_result), dim=-1)
+                # # x_loss = self.CS_criterion(
+                # specific_x_result.reshape(-1, self.opt["source_item_num"] + 1),
+                # x_ground.reshape(-1))  # b * seq
+                # x_loss = (x_loss * (x_ground_mask.reshape(-1))).mean()
+                
                 specific_y_result = self.model.lin_Y(seqs_fea[:,-used:] + y_seqs_fea[:, -used:])  # b * seq * X_num
                 # specific_y_result = self.model.lin_Y(y_seqs_fea[:, -used:])
                 specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])  # b * seq * 1
                 specific_y_result = torch.cat((specific_y_result, specific_y_pad_result), dim=-1)
                 y_share_loss = self.CS_criterion(
                 share_trans_y_result.reshape(-1, self.opt["target_item_num"] + 1),share_y_ground.reshape(-1))
-                y_share_loss = (y_share_loss * (share_y_ground_mask.reshape(-1))).mean() # 只取預測y的部分
+                y_share_loss = (y_share_loss * (share_y_ground_mask.reshape(-1))).mean()  # 只取預測y的部分
             else:
                 specific_y_result = self.model.lin_Y(y_seqs_fea[:, -used:])
                 specific_y_pad_result = self.model.lin_PAD(y_seqs_fea[:, -used:])
@@ -1483,7 +1538,9 @@ class CDSRTrainer(Trainer):
                 else:
                     loss = y_loss
                     self.prediction_loss += y_loss.item()
-                    
+        if self.opt['C2DSR']:
+            loss = loss + y_mi_loss
+            self.y_mi_loss += y_mi_loss.item()             
         ### adversarial training for bias free embedding ###
         dis_loss, adv_loss = None, None
         if self.gender_discriminator_pretrained:
@@ -1517,11 +1574,12 @@ class CDSRTrainer(Trainer):
         self.gender_discriminator.train()
         for epoch in range(20):
             # train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator, balanced =True)
-            dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, model = self.model, balanced =True)            
+            dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = self.generator, model = self.model, balanced =True)            
             batch_dis_loss = 0
             batch_dis_acc = 0
             batch_predict_male_num = 0
             batch_gt_male_num = 0
+            initial_params_A = [param.clone() for param in self.model.parameters()]
             # dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = None, generator = None, model = self.model)
             for i,batch in enumerate(dataloader):  
                 self.d_optimizer.zero_grad()
@@ -1529,9 +1587,11 @@ class CDSRTrainer(Trainer):
                 # seqs_fea,_ = get_sequence_embedding(self.opt,seq,self.model.encoder,self.model.item_emb, encoder_causality_mask = True)
                 # y_seqs_fea,_ = get_sequence_embedding(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = True)
                 # pred = self.gender_discriminator(seqs_fea + y_seqs_fea).squeeze()
+                # self.model.eval()
+                # with torch.no_grad():
                 seqs_fea = get_item_embedding_for_sequence(self.opt,seq,self.model.encoder,self.model.item_emb, self.model.CL_projector,encoder_causality_mask = False,cl =False)
                 # y_seqs_fea = get_item_embedding_for_sequence(self.opt,y_seq,self.model.encoder_Y,self.model.item_emb_Y, encoder_causality_mask = False,cl =False)
-                pred, _ = self.gender_discriminator(seqs_fea)
+                pred, _ = self.gender_discriminator(seqs_fea.detach())
                 pred = pred.squeeze()
                 # weight = []    
                 # for g in gender:
@@ -1551,6 +1611,10 @@ class CDSRTrainer(Trainer):
                 batch_dis_acc += acc.item()
                 batch_predict_male_num += (torch.round(pred)==1).sum().item()
                 batch_gt_male_num += gender[:,0].sum().item()
+                for param, initial_param in zip(self.model.parameters(), initial_params_A):
+                    if not torch.equal(param, initial_param):
+                        print("Warning: Parameters of model A are changing!")
+                        break
             print("-"*20)
             print(f"Epoch {epoch+1} discriminator pretrain loss:",batch_dis_loss/len(dataloader))
             print(f"Epoch {epoch+1} discriminator accuracy:",batch_dis_acc/len(dataloader))
@@ -1578,12 +1642,23 @@ class CDSRTrainer(Trainer):
         train_in_domain_CL_loss = []
         val_pred_loss_X = []
         val_pred_loss_Y = []
-        if self.opt['ssl'] in ['group_CL','both'] and self.opt['training_mode'] == "joint_learn" and self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
-            self.pretrain_discriminator()
-            collator = CLDataCollator(self.opt,-1, self.generator[2],self.gender_discriminator,self.model)
-            train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None)
-       
+        # if self.opt['ssl'] in ['group_CL','both'] and self.opt['training_mode'] == "joint_learn" and self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
+        #     if epoch>=4:
+        #         self.pretrain_discriminator()
+        #         collator = CLDataCollator(self.opt,-1, self.generator[2],self.gender_discriminator,self.model)
+        #         train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None)
+        is_discriminator_pretrain = False
         for epoch in range(1, self.opt['num_epoch'] + 1):
+            if self.opt['ssl'] in ['group_CL','both']:
+                if self.opt['substitute_mode'] in ["attention_weight","hybrid"]:
+                    if epoch>=10 and not is_discriminator_pretrain:
+                        self.pretrain_discriminator()
+                        collator = CLDataCollator(self.opt,-1, self.generator[2],self.gender_discriminator,self.model)
+                        train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None)
+                        is_discriminator_pretrain = True
+                else:
+                    collator = CLDataCollator(self.opt,-1, self.generator[2],self.gender_discriminator,self.model)
+                    train_dataloader = DataLoader(self.opt['data_dir'], self.opt['batch_size'], self.opt, evaluation = -1, collate_fn  = collator, generator = None)
             train_loss = 0
             epoch_start_time = time.time()
             self.mi_loss = 0
@@ -2016,6 +2091,7 @@ class CDSRTrainer(Trainer):
             else :
                 # share_fea = seqs_fea[id, -1]
                 specific_fea = y_seqs_fea[id, Y_last[id]]
+                # x_specific_fea = x_seqs_fea[id, X_last[id]]
                 if seqs_fea is not None:
                     share_fea = seqs_fea[id, -1]
                     Y_score = self.model.lin_Y(share_fea + specific_fea).squeeze(0)
@@ -2038,8 +2114,8 @@ class CDSRTrainer(Trainer):
             test_X_pred,test_X_pred_male,test_X_pred_female, test_Y_pred, test_Y_pred_male, test_Y_pred_female,test_loss_X,test_loss_Y = self.get_evaluation_result_for_test(test_dataloader, mode = "test")
             test_X_MRR, test_X_NDCG_5, test_X_NDCG_10, test_X_HR_1, test_X_HR_5, test_X_HR_10 = self.cal_test_score(test_X_pred)
             test_Y_MRR, test_Y_NDCG_5, test_Y_NDCG_10, test_Y_HR_1, test_Y_HR_5, test_Y_HR_10 = self.cal_test_score(test_Y_pred)
+            
             test_X_MRR_male, test_X_NDCG_5_male, test_X_NDCG_10_male, test_X_HR_1_male, test_X_HR_5_male, test_X_HR_10_male = self.cal_test_score(test_X_pred_male)
-
             test_X_MRR_female, test_X_NDCG_5_female, test_X_NDCG_10_female, test_X_HR_1_female, test_X_HR_5_female, test_X_HR_10_female = self.cal_test_score(test_X_pred_female)
             test_Y_MRR_male, test_Y_NDCG_5_male, test_Y_NDCG_10_male, test_Y_HR_1_male, test_Y_HR_5_male, test_Y_HR_10_male = self.cal_test_score(test_Y_pred_male)
             test_Y_MRR_female, test_Y_NDCG_5_female, test_Y_NDCG_10_female, test_Y_HR_1_female, test_Y_HR_5_female, test_Y_HR_10_female = self.cal_test_score(test_Y_pred_female)

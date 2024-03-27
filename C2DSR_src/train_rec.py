@@ -109,10 +109,8 @@ def main(args):
     print("Data loading done!")
 
     
-    
-    
     train_data = f"./fairness_dataset/{opt['dataset']}/" + filename + "/train.txt"
-    G = GraphMaker(opt, train_data)
+    # G = GraphMaker(opt, train_data)
     # adj, adj_single = G.adj, G.adj_single
     adj, adj_single = None, None
     # print("graph loaded!")
@@ -282,6 +280,11 @@ if __name__ == '__main__':
     # group CL
     parser.add_argument('--substitute_ratio',type=float,default= 0.2 ,help="substitute ratio")
     parser.add_argument('--substitute_mode',type=str,default= "IR" ,help="IR, attention_weight")
+    
+    #C2DSR
+    parser.add_argument('--C2DSR',type=bool,default= False ,help="if use C2DSR")
+    parser.add_argument('--RQ4_user_ratio',type=float,default= 1.0  ,help="user ratio")
+    parser.add_argument('--RQ4',type=bool,default= False  ,help="if train RQ4")
     args = parser.parse_args()
     
     main(args)
