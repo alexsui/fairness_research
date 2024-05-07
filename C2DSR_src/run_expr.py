@@ -172,6 +172,8 @@ parser.add_argument('--substitute_mode',type=str, default= "IR" ,help="IR, atten
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
 #C2DSR
 parser.add_argument('--C2DSR', type=str, default= False ,help="if train C2DSR")
+parser.add_argument('--RQ4_user_ratio',type=float,default= 1.0  ,help="user ratio")
+parser.add_argument('--RQ4',type=bool,default= False  ,help="if train RQ4")
 args, unknown = parser.parse_known_args()
 
 modes = [
@@ -206,7 +208,7 @@ C2DSR = False
 # topk_clusters = [3, 5, 7]
 # num_clusters = ["100,100,100", "200,200,200","300,300,300"]
 # alphas = [0.2,0.4]
-dataset = "RQ4_dataset/user_ratio/manual"
+dataset = "RQ4_dataset/worst"
 folder_list = glob.glob(f"./fairness_dataset/{dataset}/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list]

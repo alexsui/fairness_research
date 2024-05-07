@@ -4,7 +4,7 @@ import torch
 import sys
 import os
 current_dir = os.path.dirname(os.path.abspath(__file__)) #/mnt/samuel/C2DSR_fairness/C2DSR_src/RQ4
-parent_dir = os.path.dirname(os.path.dirname(current_dir)) #/mnt/samuel/C2DSR_fairness/C2DSR_src
+parent_dir = os.path.dirname(current_dir) #/mnt/samuel/C2DSR_fairness/C2DSR_src
 sys.path.insert(0, parent_dir)
 from train_rec import main
 import glob
@@ -185,67 +185,63 @@ parser.add_argument('--RQ4',type=bool,default= False  ,help="if train RQ4")
 args, unknown = parser.parse_known_args()
 
 #training
-#training_mode,domain,ssl
-training_settings = ['our','single','C2DSR']
-dataset = "RQ4_dataset"
-data_modes = ['small']
+training_settings = ['single','C2DSR','FairCDSR']
+dataset = "35age_dataset"
 #mid setting
-# alphas = [0.4,0.5,0.6,0.7,0.8]
-# substitute_ratios = [0.5,0.6,0.7,0.8,0.9]
-#small setting
-alphas = [0.1,0.2,0.3,0.4,0.5]
-substitute_ratios = [0.2,0.3,0.4,0.5,0.6]
+alphas = [0.5]
+substitute_ratios = [0.6]
 
 
-for data_mode in data_modes:
-    data_dirs = glob.glob(f"./fairness_dataset/{dataset}/interaction_diff/{data_mode}/*")
-    data_dirs = [x.split("/")[-1] for x in data_dirs if "drama" in x] 
-    columns_name = ["scenario","training_setting","seed","data_mode","alpha","substitute_ratio",
-                        "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
-                        "test_Y_MRR_male", "test_Y_NDCG_5_male", "test_Y_NDCG_10_male", "test_Y_HR_5_male", "test_Y_HR_10_male",
-                        "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
-                        ]
+data_dirs = glob.glob(f"./fairness_dataset/{dataset}/*")
+data_dirs = [x.split("/")[-1] for x in data_dirs] 
+columns_name = ["scenario","training_setting","seed","alpha","substitute_ratio",
+                    "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
+                    "test_Y_MRR_male", "test_Y_NDCG_5_male", "test_Y_NDCG_10_male", "test_Y_HR_5_male", "test_Y_HR_10_male",
+                    "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
+                ]
+
+for data_dir in data_dirs:
     res_df = pd.DataFrame(columns=columns_name)
-    for data_dir in data_dirs:
-        for training_setting in training_settings:
-            for i in range(0,3):
-                args.data_dir = data_dir
-                args.dataset = f"{dataset}/interaction_diff/{data_mode}"
-                args.id = f"RQ4_{training_setting}_{data_mode}"  
-                args.seed = i
-                args.num_epoch = 200
-                if training_setting == "single":
-                    args.domain = "single"
-                    args.training_mode = "finetune"
-                    args.ssl = None
-                    args.data_augmentation = None
-                    args.num_cluster = "100,100,200"
-                    df = pd.DataFrame([[data_dir, training_setting, i,data_mode,0,0]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-                    res_df = pd.concat([res_df,df],axis=0)
-                elif training_setting == "C2DSR":
-                    args.domain = "cross"
-                    args.training_mode = "finetune"
-                    args.ssl = None
-                    args.data_augmentation = None
-                    args.num_cluster = "100,100,200"
-                    df = pd.DataFrame([[data_dir, training_setting, i,data_mode,0,0]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-                    res_df = pd.concat([res_df,df],axis=0)
-                else:
-                    for alpha in alphas:
-                        for substitute_ratio in substitute_ratios:
-                            args.alpha = alpha
-                            args.substitute_ratio = substitute_ratio
-                            args.id = f"RQ4_{training_setting}_{data_mode}_alpha{alpha}_sub{substitute_ratio}"
-                            args.domain = "cross"
-                            args.training_mode = "joint_learn"
-                            args.ssl = "both"
-                            args.cluster_mode = "separate"
-                            args.num_cluster = "250,250,500"
-                            args.data_augmentation = "item_augmentation"
-                            best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
-                            df = pd.DataFrame([[data_dir, training_setting, i,data_mode,alpha,substitute_ratio]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-                            res_df = pd.concat([res_df,df],axis=0)
-        
-    Path(f"./RQ4/interaction_diff/result").mkdir(parents=True, exist_ok=True)
-    res_df.to_csv(f"./RQ4/interaction_diff/result/{data_mode}.csv")
+    for training_setting in training_settings:
+        for i in range(0,2):
+            args.data_dir = data_dir
+            args.dataset = f"{dataset}"
+            args.id = f"RQ6_{training_setting}"  
+            args.seed = i
+            args.num_epoch = 200
+            if training_setting == "single":
+                args.domain = "single"
+                args.training_mode = "finetune"
+                args.ssl = None
+                args.data_augmentation = None
+                args.num_cluster = "100,100,200"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                df = pd.DataFrame([[data_dir, training_setting, i,0,0]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+            elif training_setting == "C2DSR":
+                args.domain = "cross"
+                args.training_mode = "finetune"
+                args.ssl = None
+                args.data_augmentation = None
+                args.num_cluster = "100,100,200"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                df = pd.DataFrame([[data_dir, training_setting, i,0,0]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+            else:
+                for alpha in alphas:
+                    for substitute_ratio in substitute_ratios:
+                        args.alpha = alpha
+                        args.substitute_ratio = substitute_ratio
+                        args.id = f"RQ6_{training_setting}_alpha{alpha}_sub{substitute_ratio}"
+                        args.domain = "cross"
+                        args.training_mode = "joint_learn"
+                        args.ssl = "both"
+                        args.cluster_mode = "separate"
+                        args.num_cluster = "250,250,500"
+                        args.data_augmentation = "item_augmentation"
+                        best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                        df = pd.DataFrame([[data_dir, training_setting, i,alpha,substitute_ratio]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                        res_df = pd.concat([res_df,df],axis=0)
     
+    Path(f"./RQ6/35/result").mkdir(parents=True, exist_ok=True)
+    res_df.to_csv(f"./RQ6/35/result/{data_dir}_res.csv")

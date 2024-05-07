@@ -23,15 +23,20 @@ def compute_features(opt, eval_loader, model, gender):
     batch_mixed_seq= [mixed_seq[i*batch_size:(i+1)*batch_size] for i in range(len(mixed_seq)//batch_size+1)]
     batch_ts= [ts[i*batch_size:(i+1)*batch_size] for i in range(len(ts)//batch_size+1)]
     for i, (index, mixed_seq, ts) in enumerate(zip(batch_index, batch_mixed_seq, batch_ts)):
+        if not index:
+            continue
         index = torch.tensor(index)
-        mixed_seq = torch.tensor(mixed_seq) # no augmentation- cross domain sequence
+        mixed_seq = torch.tensor(mixed_seq).long() # no augmentation- cross domain sequence
         ts = torch.tensor(ts)
         if opt['cuda']:
             mixed_seq = mixed_seq.cuda()
             ts = ts.cuda()
             index = index.cuda()
         with torch.no_grad():
-            feat = get_embedding_for_ssl(opt, mixed_seq, model.encoder, model.item_emb, projector=None, encoder_causality_mask = False, ts=ts)
+            try:
+                feat = get_embedding_for_ssl(opt, mixed_seq, model.encoder, model.item_emb, projector=None, encoder_causality_mask = False, ts=ts)
+            except:
+                ipdb.set_trace()
             features[index] = feat
     return features.cpu()
 def compute_embedding_for_target_user(opt, dataloader, model, name):

@@ -1089,7 +1089,7 @@ class CDSRTrainer(Trainer):
         # pred_female_seq = seq[torch.round(pred)==0]
         # sorted_idx = weight.argsort(dim=1)[:,-10:] #ascending order
         # pred_female_seq[torch.arange(len(pred_female_seq))[:, None], sorted_idx]
-    def I2C_CL_Kmeans(self, index, mixed_seq, target_seq, ts_d, ts_yd, gender,cluster_result):
+    def I2C_CL_Kmeans(self, epoch, index, mixed_seq, target_seq, ts_d, ts_yd, gender, cluster_result):
         ts_d = ts_d if self.opt['time_encode'] else None
         ts_yd = ts_yd if self.opt['time_encode'] else None
         cluster_result_mixed, cluster_result_male_mixed, cluster_result_female_mixed = cluster_result[0], cluster_result[1], cluster_result[2]
@@ -1239,8 +1239,8 @@ class CDSRTrainer(Trainer):
             if self.opt['ssl'] in ['interest_cluster','both']:
                 if epoch>=self.opt['warmup_epoch']:
                     # I2C_loss = self.I2C_CL(index,seq, y_seq,ts_d,ts_yd,gender)
-                    # I2C_loss = self.I2C_CL_Kmeans(index, seq, y_seq, ts_d, ts_yd, gender, cluster_result)
-                    I2C_loss = self.I2C_CL(index, seq, y_seq, ts_d, ts_yd, gender)
+                    I2C_loss = self.I2C_CL_Kmeans(epoch, index, seq, y_seq, ts_d, ts_yd, gender, cluster_result)
+                    # I2C_loss = self.I2C_CL(index, seq, y_seq, ts_d, ts_yd, gender)
                  # print(f"\033[34mI2C_loss:{I2C_loss}\033[0m")
                 else:
                     I2C_loss = torch.Tensor([0]).cuda() if self.opt['cuda'] else torch.Tensor([0])
@@ -1676,26 +1676,44 @@ class CDSRTrainer(Trainer):
             cluster_result_female_mixed = None
             cluster_result_mixed = None
             cluster_result = None
-            
             if self.opt['ssl'] in ["interest_cluster","both"]:
-                pass
-                # if epoch >= self.opt['warmup_epoch']:
-                #     if self.opt['cluster_mode']=="separate":
-                #         # compute cluster results
-                #         male_mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = "male")
-                #         male_mixed_feature[torch.norm(male_mixed_feature,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
-                #         male_mixed_feature = male_mixed_feature.numpy()
-                #         cluster_result_male_mixed = run_kmeans(male_mixed_feature, self.opt, gender = "male") 
-                #         female_mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = "female")
-                #         female_mixed_feature[torch.norm(female_mixed_feature,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
-                #         female_mixed_feature = female_mixed_feature.numpy()
-                #         cluster_result_female_mixed = run_kmeans(female_mixed_feature, self.opt, gender = "female")
-                #     else:
-                #         mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = None)
-                #         mixed_feature[torch.norm(mixed_feature,dim=1)>1.5] /= 2     
-                #         mixed_feature = mixed_feature.numpy()
-                #         cluster_result_mixed = run_kmeans(mixed_feature, self.opt, gender = None) 
-                #     cluster_result = (cluster_result_mixed, cluster_result_male_mixed, cluster_result_female_mixed)
+                # pass
+                if epoch >= self.opt['warmup_epoch']:
+                    if self.opt['cluster_mode']=="separate":
+                        # compute cluster results
+                        male_mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = "male")
+                        male_mixed_feature[torch.norm(male_mixed_feature,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
+                        male_mixed_feature = male_mixed_feature.numpy()
+                        cluster_result_male_mixed = run_kmeans(male_mixed_feature, self.opt, gender = "male") 
+                        female_mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = "female")
+                        female_mixed_feature[torch.norm(female_mixed_feature,dim=1)>1.5] /= 2 #account for the few samples that are computed twice  
+                        female_mixed_feature = female_mixed_feature.numpy()
+                        cluster_result_female_mixed = run_kmeans(female_mixed_feature, self.opt, gender = "female")
+                    else:
+                        mixed_feature = compute_features(self.opt, train_dataloader, self.model, gender = None)
+                        mixed_feature[torch.norm(mixed_feature,dim=1)>1.5] /= 2     
+                        mixed_feature = mixed_feature.numpy()
+                        cluster_result_mixed = run_kmeans(mixed_feature, self.opt, gender = None) 
+                    cluster_result = (cluster_result_mixed, cluster_result_male_mixed, cluster_result_female_mixed)
+                    if epoch%20 == 0:
+                        cluster_num = self.opt['num_cluster'][0]
+                        folder = f"RQ2/embedding/res/{self.opt['data_dir']}/{cluster_num}"
+                        if self.opt['cluster_mode'] == "separate":
+                            Path(folder+"/male").mkdir(parents=True, exist_ok=True)
+                            Path(folder+"/female").mkdir(parents=True, exist_ok=True)
+                            np.save(f"{folder}/male/user_embedding_{epoch}.npy",male_mixed_feature)
+                            np.save(f"{folder}/male/user_proto_label_{epoch}.npy",cluster_result_male_mixed['im2cluster'][0].cpu().numpy())
+                            np.save(f"{folder}/male/cluster_embedding_{epoch}.npy",cluster_result_male_mixed['centroids'][0].cpu().numpy())
+                            
+                            np.save(f"{folder}/female/user_embedding_{epoch}.npy", female_mixed_feature)
+                            np.save(f"{folder}/female/user_proto_label_{epoch}.npy",cluster_result_female_mixed['im2cluster'][0].cpu().numpy())
+                            np.save(f"{folder}/female/cluster_embedding_{epoch}.npy",cluster_result_female_mixed['centroids'][0].cpu().numpy())
+                        else:
+                            Path(folder+"/joint").mkdir(parents=True, exist_ok=True)
+                            np.save(f"{folder}/joint/user_embedding_{epoch}.npy",mixed_feature)
+                            np.save(f"{folder}/joint/user_proto_label_{epoch}.npy",cluster_result_mixed['im2cluster'][0].cpu().numpy())
+                            np.save(f"{folder}/joint/gender_label_{epoch}.npy", np.array([d[-1][0] for d in train_dataloader.all_data]))
+                            np.save(f"{folder}/joint/cluster_embedding_{epoch}.npy",cluster_result_mixed['centroids'][0].cpu().numpy())
             ### item-generation & user augmentation ###
             if self.opt['data_augmentation']=="item_augmentation":# 若是item augmentation，則每個epoch都要重新生成DataLoader
                 if self.opt['ssl'] in ['group_CL','both']:
@@ -1831,7 +1849,7 @@ class CDSRTrainer(Trainer):
                 print('.', end='')
         if valid_entity == 0:
             valid_entity = 1
-        return MRR/valid_entity, NDCG_5 / valid_entity, NDCG_10 / valid_entity, HR_1 / valid_entity, HR_5 / (valid_entity*2/3), HR_10 / (valid_entity*2/3)
+        return MRR/valid_entity, NDCG_5 / valid_entity, NDCG_10 / valid_entity, HR_1 / valid_entity, HR_5 / valid_entity, HR_10 / valid_entity
 
     def get_evaluation_result_for_test(self, evaluation_batch, mode = "valid"):
         X_pred = []

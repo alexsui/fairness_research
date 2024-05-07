@@ -94,7 +94,7 @@ parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
 parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item to generate")
 
 args, unknown = parser.parse_known_args()
-dataset = "RQ4_dataset/interaction_diff/small"
+dataset = "RQ4_dataset/worst"
 folder_list = glob.glob(f"./fairness_dataset/{dataset}/*")
 folder_list = [x.split("/")[-1] for x in folder_list]
 data_dir = [x for x in folder_list if x not in ["data_preprocess.ipynb","data_preprocess.py","raw_data"]]

@@ -3,11 +3,11 @@ import time
 import torch
 import sys
 import os
-current_dir = os.path.dirname(os.path.abspath(__file__)) #/mnt/samuel/C2DSR_fairness/C2DSR_src/RQ4
-parent_dir = os.path.dirname(os.path.dirname(current_dir)) #/mnt/samuel/C2DSR_fairness/C2DSR_src
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
+
 from train_rec import main
-import glob
 import ipdb
 import pandas as pd
 from pathlib import Path
@@ -164,88 +164,79 @@ parser.add_argument('--topk', type=int,default= 10 ,help="topk item recommendati
 # item generation
 parser.add_argument('--generate_type',type=str,default= "X" ,help="[X,Y,mixed]")
 parser.add_argument('--generate_num',type=int,default= 5 ,help="number of item to generate")
-parser.add_argument('--alpha',type=float,default= 0.4 ,help="insertion ration for DGSA")
+parser.add_argument('--alpha',type=float,default= 0.6 ,help="insertion ration for DGSA")
 # nonoverlap user augmentation
 parser.add_argument('--augment_size',type=int,default= 30 ,help="nonoverlap_augment size")
 #interest clustering
-parser.add_argument('--topk_cluster',type=str,default= 7 ,help="number of multi-view cluster")
+parser.add_argument('--topk_cluster',type=str,default= 5 ,help="number of multi-view cluster")
 parser.add_argument('--num_cluster', type=str, default= '100,100,200' ,help="number of clusters for kmeans")
 parser.add_argument('--cluster_mode',type=str,default= "separate" ,help="separate or joint")
 parser.add_argument('--warmup_epoch', type=int, default= 0 ,help="warmup epoch for cluster")
 parser.add_argument('--cluster_ratio',type=float, default= 0.5 ,help="cluster ratio")
 #group CL
-parser.add_argument('--substitute_ratio',type=float, default= 0.6 ,help="substitute ratio")
+parser.add_argument('--substitute_ratio',type=float, default= 0.5 ,help="substitute ratio")
 parser.add_argument('--substitute_mode',type=str, default= "hybrid" ,help="IR, attention_weight")
 # loss weight
 parser.add_argument('--lambda_',nargs='*', default= [1,1] ,help="loss weight")
-
-parser.add_argument('--C2DSR',type=bool,default= False ,help="if use C2DSR")
-parser.add_argument('--RQ4_user_ratio',type=float,default= 1.0  ,help="user ratio")
-parser.add_argument('--RQ4',type=bool,default= False  ,help="if train RQ4")
 args, unknown = parser.parse_known_args()
 
-#training
-#training_mode,domain,ssl
-training_settings = ['our','single','C2DSR']
-dataset = "RQ4_dataset"
-data_modes = ['small']
-#mid setting
-# alphas = [0.4,0.5,0.6,0.7,0.8]
-# substitute_ratios = [0.5,0.6,0.7,0.8,0.9]
-#small setting
-alphas = [0.1,0.2,0.3,0.4,0.5]
-substitute_ratios = [0.2,0.3,0.4,0.5,0.6]
-
-
-for data_mode in data_modes:
-    data_dirs = glob.glob(f"./fairness_dataset/{dataset}/interaction_diff/{data_mode}/*")
-    data_dirs = [x.split("/")[-1] for x in data_dirs if "drama" in x] 
-    columns_name = ["scenario","training_setting","seed","data_mode","alpha","substitute_ratio",
-                        "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
-                        "test_Y_MRR_male", "test_Y_NDCG_5_male", "test_Y_NDCG_10_male", "test_Y_HR_5_male", "test_Y_HR_10_male",
-                        "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
-                        ]
+cluster_numbers = ["700,700,700","500,500,500","500,500,500","400,400,400"]
+data_dirs = ["sci-fi_thriller","action_comedy","comedy_drama","sci-fi_comedy"]
+cluster_ratios = [0.7,0.4,0.3,0.7]
+ablations = ['FairCDSR','no_DGSA','no_GCL','no_GMiT']
+dataset = "Movie_lens_main"
+for data_dir, cluster_number,cluster_ratio in zip(data_dirs,cluster_numbers,cluster_ratios):
+    columns_name = ["seed","ablation",
+                    "test_Y_MRR", "test_Y_NDCG_5", "test_Y_NDCG_10", "test_Y_HR_5", "test_Y_HR_10",
+                    "test_Y_MRR_male", "test_Y_NDCG_5_male", "test_Y_NDCG_10_male", "test_Y_HR_5_male", "test_Y_HR_10_male",
+                    "test_Y_MRR_female", "test_Y_NDCG_5_female", "test_Y_NDCG_10_female", "test_Y_HR_5_female", "test_Y_HR_10_female"
+                    ]
     res_df = pd.DataFrame(columns=columns_name)
-    for data_dir in data_dirs:
-        for training_setting in training_settings:
-            for i in range(0,3):
-                args.data_dir = data_dir
-                args.dataset = f"{dataset}/interaction_diff/{data_mode}"
-                args.id = f"RQ4_{training_setting}_{data_mode}"  
-                args.seed = i
-                args.num_epoch = 200
-                if training_setting == "single":
-                    args.domain = "single"
-                    args.training_mode = "finetune"
-                    args.ssl = None
-                    args.data_augmentation = None
-                    args.num_cluster = "100,100,200"
-                    df = pd.DataFrame([[data_dir, training_setting, i,data_mode,0,0]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-                    res_df = pd.concat([res_df,df],axis=0)
-                elif training_setting == "C2DSR":
-                    args.domain = "cross"
-                    args.training_mode = "finetune"
-                    args.ssl = None
-                    args.data_augmentation = None
-                    args.num_cluster = "100,100,200"
-                    df = pd.DataFrame([[data_dir, training_setting, i,data_mode,0,0]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-                    res_df = pd.concat([res_df,df],axis=0)
-                else:
-                    for alpha in alphas:
-                        for substitute_ratio in substitute_ratios:
-                            args.alpha = alpha
-                            args.substitute_ratio = substitute_ratio
-                            args.id = f"RQ4_{training_setting}_{data_mode}_alpha{alpha}_sub{substitute_ratio}"
-                            args.domain = "cross"
-                            args.training_mode = "joint_learn"
-                            args.ssl = "both"
-                            args.cluster_mode = "separate"
-                            args.num_cluster = "250,250,500"
-                            args.data_augmentation = "item_augmentation"
-                            best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
-                            df = pd.DataFrame([[data_dir, training_setting, i,data_mode,alpha,substitute_ratio]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
-                            res_df = pd.concat([res_df,df],axis=0)
-        
-    Path(f"./RQ4/interaction_diff/result").mkdir(parents=True, exist_ok=True)
-    res_df.to_csv(f"./RQ4/interaction_diff/result/{data_mode}.csv")
-    
+    for i in range(0,3):
+        args.data_dir = data_dir
+        args.dataset = dataset
+        args.seed = i
+        args.num_epoch = 200
+        for ablation in ablations:
+            if  ablation == 'no_DGSA':
+                args.cluster_ratio = cluster_ratio
+                args.num_cluster = cluster_number
+                args.cluster_mode = 'separate'
+                args.ssl = "both"
+                args.training_mode = "joint_learn"
+                args.id = f"RQ5_{ablation}"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                df = pd.DataFrame([[i,ablation]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+            elif ablation == 'no_GCL':
+                args.cluster_ratio = cluster_ratio
+                args.num_cluster = cluster_number
+                args.cluster_mode = 'separate'
+                args.ssl = "interest_cluster"
+                args.training_mode = "joint_learn"
+                args.data_augmentation = "item_generation"
+                args.id = f"RQ5_{ablation}"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                df = pd.DataFrame([[i,ablation]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+            elif ablation == 'no_GMiT':
+                args.ssl = "group_CL"
+                args.training_mode = "joint_learn"
+                args.data_augmentation = "item_generation"
+                args.id = f"RQ5_{ablation}"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                df = pd.DataFrame([[i,ablation]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+            else:
+                args.cluster_ratio = cluster_ratio
+                args.num_cluster = cluster_number
+                args.cluster_mode = 'separate'
+                args.ssl = "both"
+                args.training_mode = "joint_learn"
+                args.data_augmentaion = "item_augmentation"
+                args.id = f"RQ5_{ablation}"
+                best_Y_test,best_Y_test_male,best_Y_test_female = main(args)
+                df = pd.DataFrame([[i,ablation]+best_Y_test+best_Y_test_male+best_Y_test_female],columns = columns_name)
+                res_df = pd.concat([res_df,df],axis=0)
+    Path(f"./RQ5/ablation_res/").mkdir(parents=True, exist_ok=True)
+    res_df.to_csv(f"./RQ2/ablation_res/{data_dir}.csv")
