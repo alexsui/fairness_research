@@ -12,7 +12,7 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 This section describes the scripts used for data preprocessing and their purposes:
 
 1. **mid_preprocess.ipynb**
-   - **Purpose**: Generates domain-specific CSV files.
+   - **Purpose**: Generates domain-specific CSV files from `ml_raw_data`.
    - **Usage**: Open and run this notebook in Jupyter to output the CSV files.
 
 2. **data_preprocess.py**
@@ -22,6 +22,13 @@ This section describes the scripts used for data preprocessing and their purpose
      python data_preprocess.py [dataset_name]
      ```
         where `[dataset_name]` can be "Movie_lens_main", "RQ4_dataset", "RQ5_dataset"
+        
+3. **calculate_IR.ipynb**
+    - **Purpose**: Calculate group interaction ratio (GIR) for **Group-aware Contrastive Learning**.
+   - **Usage**: Set the variable `main_dataset` as the name of the current dataset to generate GIR for the specific dataset.
+
+
+
 ## Item Generator Pre-training
 
 Follow the steps below to pre-train the item generator model. The pre-trained model will be stored in the `generator_model` folder.
