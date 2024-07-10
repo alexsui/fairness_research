@@ -1,3 +1,12 @@
+## Create environment
+All required package except for pytorch can be install using following command:
+```bash
+conda env create -f env.yml -n [new_env_name]
+```
+then you need to install pytorch independently:
+```bash
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
 ## Data Preprocessing
 
 This section describes the scripts used for data preprocessing and their purposes:
