@@ -10,9 +10,9 @@ This section describes the scripts used for data preprocessing and their purpose
    - **Purpose**: Preprocesses the domain CSV files into a format suitable for model input.
    - **Usage**: Run the script from the command line:
      ```bash
-     python data_preprocess.py
+     python data_preprocess.py [dataset_name]
      ```
-
+        where `[dataset_name]` can be "Movie_lens_main", "RQ4_dataset", "RQ5_dataset"
 ## Item Generator Pre-training
 
 Follow the steps below to pre-train the item generator model. The pre-trained model will be stored in the `generator_model` folder.
